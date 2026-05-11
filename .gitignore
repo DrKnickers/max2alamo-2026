@@ -1,0 +1,64 @@
+# Build outputs
+build/
+build-*/
+out/
+bin/
+lib/
+Debug/
+Release/
+RelWithDebInfo/
+MinSizeRel/
+x64/
+x86/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+_deps/
+*.cmake
+!CMakeLists.txt
+!cmake/*.cmake
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.sln.docstates
+*.opendb
+*.VC.db
+*.VC.opendb
+*.aps
+*.ipch
+*.sdf
+*.ncb
+*.pdb
+*.idb
+
+# IDE
+.vscode/
+.idea/
+
+# Compiled artifacts
+*.obj
+*.o
+*.exe
+*.dll
+*.dle
+*.exp
+*.lib
+*.a
+
+# Reverse-engineering artifacts (internal only — never committed, even in private repo)
+re/
+
+# Test corpus (Lucasfilm IP — local only)
+tests/corpus/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
