@@ -20,14 +20,19 @@ jobs:
       - name: Build (Release)
         run: cmake --build build --config Release --parallel
 
-      - name: Smoke-test CLIs
+      - name: Verify CLI artifacts exist
         shell: pwsh
         run: |
-          # Stubs return non-zero on purpose; we only verify they execute.
-          $exit = (& .\build\tools\alo_dump\Release\alo_dump.exe 2>&1; $LASTEXITCODE)
-          Write-Host "alo_dump exited $exit (non-zero is expected for the Phase 0 stub)"
-          $exit = (& .\build\tools\alo_roundtrip\Release\alo_roundtrip.exe 2>&1; $LASTEXITCODE)
-          Write-Host "alo_roundtrip exited $exit (non-zero is expected for the Phase 0 stub)"
+          $tools = @(
+            'build\tools\alo_dump\Release\alo_dump.exe',
+            'build\tools\alo_roundtrip\Release\alo_roundtrip.exe'
+          )
+          foreach ($tool in $tools) {
+            if (-not (Test-Path $tool)) {
+              throw "Expected build artifact missing: $tool"
+            }
+            Write-Host "OK: $tool"
+          }
 
   # Note: the max2alamo .dle is intentionally NOT built here. The 3ds Max 2026
   # SDK is not redistributable, so the plugin builds only on developer machines
