@@ -12,13 +12,17 @@ This is a clean-room rewrite of Petroglyph's 3ds Max 9 `max2alamo.dle`, which ha
 
 - Export 3ds Max 2026 scenes to valid `.alo` files loadable in vanilla EaW and FoC.
 - Export `.ala` animations sampled from Max bone tracks.
+- **Object visibility tracks.** Sample each object's animated visibility (Max's per-object visibility track) per frame and write it into the `.ala` as a bit-packed visibility track, matching the legacy exporter's behavior. EaW uses these in-game for parts that appear / disappear (blinking nav lights, hardpoint state changes, debris reveal, etc.).
 - Cover: static meshes, skinned meshes (multi-bone weighting), Petroglyph stock shaders with parameter export, hardpoints, proxies, lights.
 
 ## Non-goals (v1)
 
-- An importer — Mike Lankamp's existing importer continues to work for imports.
 - UaW Format #2 dazzles.
 - Backporting to older Max versions.
+
+## Roadmap (post-v1)
+
+- **Importer.** Once the exporter is stable, the next project is a modern Max 2026 importer to replace Mike Lankamp's `alamo2max.dlu`. The `alamo_format` library is designed so the read side is already there (exercised by `alo_dump` + round-trip tests); only the Max-side glue remains.
 
 ## Architecture
 

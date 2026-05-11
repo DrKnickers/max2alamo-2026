@@ -163,10 +163,20 @@ The Blender plugin samples every frame between 0 and `animLength` via `scene.fra
 
 ### Visibility tracks
 
-Per-bone, per-frame visibility encoded as a packed bit string:
+**First-class v1 feature.** The legacy exporter samples each object's animated visibility (Max's per-object visibility property — the eye-icon track) frame-by-frame and writes it into the `.ala` as a bit-packed visibility track. EaW uses these in-game for parts that appear / disappear: blinking nav lights, hardpoint state, debris reveal, opening hangar bays, etc.
 
-- '1' = visible, '0' = hidden
-- Packed into bytes, each byte's bit order reversed for little-endian: `byte = bits[0:8][::-1]`
+Encoding (per `Blender-ALAMO-Plugin/io_alamo_tools/export_ala.py`):
+
+- '1' = visible, '0' = hidden, one bit per frame.
+- Packed into bytes, each byte's bit order reversed for little-endian: `byte = bits[0:8][::-1]`.
+- The bit string is padded to an 8-bit boundary at the end.
+
+Two sources of visibility data must both be exported:
+
+1. **Object visibility** — Max's animated `Visibility` property on the node. Sampled per frame from the animation range. Maps to a per-bone visibility track (since exported objects are bone-attached).
+2. **Proxy visibility** — Blender plugin uses `proxyIsHiddenAnimation` on `PoseBone`; the equivalent in Max is a user-property animation track. Confirm exact source by RE in Phase 0.5.
+
+Phase 0.5 RE to confirm: which chunk ID carries each visibility track, and the precise field that follows the count word.
 
 ### Bone tracks
 
