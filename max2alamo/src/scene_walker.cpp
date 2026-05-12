@@ -2,7 +2,11 @@
 
 #include <Max.h>
 #include <maxapi.h>
-#include <stdmat.h>   // ID_DI = standard-material diffuse slot constant
+#include <stdmat.h>      // ID_DI = standard-material diffuse slot constant
+#include <iparamb2.h>
+#include <pbbitmap.h>    // full PBBitmap definition (forward-only via ifnpub)
+#include <IDxMaterial.h> // DirectX Shader material interface
+#include <AssetManagement/AssetUser.h>
 
 #include <IGame/IGame.h>
 #include <IGame/IGameObject.h>
@@ -11,6 +15,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <sstream>
 #include <string>
 
 namespace max2alamo {
@@ -38,30 +43,87 @@ std::string basename(const std::string& path)
     return (pos == std::string::npos) ? path : path.substr(pos + 1);
 }
 
-// Look up the diffuse-slot bitmap filename on a Max material. Returns
-// empty string if no diffuse texture is set or the material isn't a
-// Standard material (in which case the engine will fall back to its
-// default for the chosen shader). Multi/Sub-Object materials get
-// flattened to their first sub-material for Phase 4 -- multi-material
-// support comes later.
-std::string extract_diffuse_texture(IGameMaterial* mat)
+// If `mat` is a DirectX Shader material, return its IDxMaterial interface
+// (or one of the newer revisions). Returns nullptr for any other material.
+IDxMaterial* as_dx_material(Mtl* mat)
 {
-    if (!mat) return {};
-    if (mat->GetSubMaterialCount() > 0) {
-        if (IGameMaterial* sub = mat->GetSubMaterial(0)) {
-            return extract_diffuse_texture(sub);
+    if (!mat) return nullptr;
+    if (auto* p = static_cast<IDxMaterial*>(mat->GetInterface(IDXMATERIAL_INTERFACE))) {
+        return p;
+    }
+    return nullptr;
+}
+
+struct ExtractedMaterial {
+    std::string shader_name;   // e.g. "MeshAlpha.fx" (Standard) or the .fx filename (DXMaterial)
+    std::string base_texture;  // diffuse / first-non-empty bitmap, basename only
+    std::string source_kind;   // "Standard", "DXMaterial", "Multi", "Other" -- used in diagnostics
+};
+
+// Inspect a Max material and figure out what shader / texture pair best
+// represents it for Phase 4 export. Decision tree:
+//   1. DXMaterial -> shader_name = its .fx filename; base_texture = first
+//                    non-empty effect bitmap.
+//   2. Multi/Sub-Object with SubMaterialCount > 0 -> recurse into sub[0].
+//      (Phase 4 single-material assumption; respecting face matIDs is
+//      a later phase.)
+//   3. Standard material (or anything else) -> shader_name defaults to
+//      "MeshAlpha.fx"; base_texture from the diffuse-slot bitmap.
+ExtractedMaterial extract_material(IGameMaterial* gmat)
+{
+    ExtractedMaterial out;
+    out.shader_name = "MeshAlpha.fx";
+    out.source_kind = "Other";
+
+    if (!gmat) return out;
+
+    // DXMaterial check (first -- a Multi/Sub-Object can't also be DX,
+    // and a DX material wraps a Standard material's parameters under
+    // the hood so the IGame Standard-material accessors would lie).
+    if (Mtl* maxmat = gmat->GetMaxMaterial()) {
+        if (IDxMaterial* dx = as_dx_material(maxmat)) {
+            out.source_kind = "DXMaterial";
+            const MSTR& fn = dx->GetEffectFile().GetFileName();
+            if (fn.length() > 0) {
+                out.shader_name = basename(to_utf8(fn.data()));
+            }
+            const int n = dx->GetNumberOfEffectBitmaps();
+            for (int i = 0; i < n; ++i) {
+                if (PBBitmap* pb = dx->GetEffectBitmap(i)) {
+                    const TCHAR* path = pb->bi.Name();
+                    if (path && path[0]) {
+                        out.base_texture = basename(to_utf8(path));
+                        break;
+                    }
+                }
+            }
+            return out;
         }
     }
-    const int n = mat->GetNumberOfTextureMaps();
+
+    // Multi/Sub-Object: recurse into first sub.
+    if (gmat->GetSubMaterialCount() > 0) {
+        if (IGameMaterial* sub = gmat->GetSubMaterial(0)) {
+            ExtractedMaterial inner = extract_material(sub);
+            // Mark the outer kind as Multi so diagnostics show the path.
+            inner.source_kind = "Multi -> " + inner.source_kind;
+            return inner;
+        }
+    }
+
+    // Plain Standard material: scan for a Diffuse-slot bitmap.
+    out.source_kind = "Standard";
+    const int n = gmat->GetNumberOfTextureMaps();
     for (int i = 0; i < n; ++i) {
-        IGameTextureMap* tex = mat->GetIGameTextureMap(i);
+        IGameTextureMap* tex = gmat->GetIGameTextureMap(i);
         if (!tex) continue;
         if (tex->GetStdMapSlot() != ID_DI) continue;
         const TCHAR* fn = tex->GetBitmapFileName();
         if (!fn) continue;
-        return basename(to_utf8(fn));
+        out.base_texture = basename(to_utf8(fn));
+        break;
     }
-    return {};
+    return out;
 }
 
 void update_bbox(alamo_format::ExportMesh& mesh, const Point3& p)
@@ -86,12 +148,14 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh, alamo_format::ExportMesh& out
         return false;  // skip degenerate / empty meshes
     }
 
-    // Phase 4: single submesh, single material slot, fixed shader.
-    // Multi-material support arrives later (face->matID buckets per
-    // ExportSubmesh).
+    // Phase 4: single submesh, single material slot. Material extraction
+    // handles both Standard and DirectX Shader (DXMaterial) materials,
+    // recursing one level into Multi/Sub-Object. Full per-face matID
+    // buckets are a later phase.
+    ExtractedMaterial em = extract_material(node->GetNodeMaterial());
     alamo_format::ExportSubmesh sub;
-    sub.material.shader_name  = "MeshAlpha.fx";
-    sub.material.base_texture = extract_diffuse_texture(node->GetNodeMaterial());
+    sub.material.shader_name  = std::move(em.shader_name);
+    sub.material.base_texture = std::move(em.base_texture);
     sub.vertices.reserve(static_cast<std::size_t>(face_count) * 3u);
     sub.indices.reserve(static_cast<std::size_t>(face_count) * 3u);
 
@@ -172,6 +236,108 @@ void walk_node(IGameNode* node, alamo_format::ExportScene& scene)
 
 }  // namespace
 
+// ---- Diagnostic log -------------------------------------------------------
+
+const char* slot_name(int slot)
+{
+    switch (slot) {
+        case ID_AM: return "Ambient";
+        case ID_DI: return "Diffuse";
+        case ID_SP: return "Specular";
+        case ID_SH: return "Glossiness";
+        case ID_SS: return "SpecLevel";
+        case ID_SI: return "SelfIllum";
+        case ID_OP: return "Opacity";
+        case ID_FI: return "Filter";
+        case ID_BU: return "Bump";
+        case ID_RL: return "Reflection";
+        case ID_RR: return "Refraction";
+        case ID_DP: return "Displacement";
+        default:    return "?";
+    }
+}
+
+void log_node_material(IGameNode* node, std::ostringstream& os)
+{
+    if (!node) return;
+
+    char node_name[256];
+    std::snprintf(node_name, sizeof(node_name), "%s",
+                  to_utf8(node->GetName()).c_str());
+    os << "Node \"" << node_name << "\":\n";
+
+    IGameMaterial* gmat = node->GetNodeMaterial();
+    if (!gmat) {
+        os << "  (no material)\n\n";
+        return;
+    }
+
+    Mtl* maxmat = gmat->GetMaxMaterial();
+    if (maxmat) {
+        os << "  Max material class: \"" << to_utf8(maxmat->GetName()) << "\"";
+        MSTR cn;
+        maxmat->GetClassName(cn);
+        if (cn.length() > 0) {
+            os << " (type: " << to_utf8(cn.data()) << ")";
+        }
+        os << "\n";
+    }
+
+    if (IDxMaterial* dx = as_dx_material(maxmat)) {
+        os << "  -> DXMaterial detected\n";
+        const MSTR& fn = dx->GetEffectFile().GetFileName();
+        os << "  effect file: \""
+           << (fn.length() > 0 ? to_utf8(fn.data()) : std::string("(empty)"))
+           << "\"\n";
+        const int n = dx->GetNumberOfEffectBitmaps();
+        os << "  effect bitmaps (" << n << "):\n";
+        for (int i = 0; i < n; ++i) {
+            PBBitmap* pb = dx->GetEffectBitmap(i);
+            const TCHAR* path = pb ? pb->bi.Name() : nullptr;
+            os << "    [" << i << "] \""
+               << (path ? to_utf8(path) : std::string("(empty)"))
+               << "\"\n";
+        }
+    } else {
+        const int subs = gmat->GetSubMaterialCount();
+        if (subs > 0) {
+            os << "  Multi/Sub-Object with " << subs << " sub-materials (using sub[0])\n";
+        }
+        const int n = gmat->GetNumberOfTextureMaps();
+        os << "  texture maps (" << n << "):\n";
+        for (int i = 0; i < n; ++i) {
+            IGameTextureMap* tex = gmat->GetIGameTextureMap(i);
+            if (!tex) { os << "    [" << i << "] (null)\n"; continue; }
+            const int slot = tex->GetStdMapSlot();
+            const TCHAR* fn = tex->GetBitmapFileName();
+            os << "    [" << i << "] slot=" << slot << " (" << slot_name(slot) << ")"
+               << " file=\"" << (fn ? to_utf8(fn) : std::string("(empty)")) << "\"\n";
+        }
+    }
+
+    ExtractedMaterial em = extract_material(gmat);
+    os << "  -> chosen for export:\n"
+       << "       shader_name  = \"" << em.shader_name << "\"\n"
+       << "       base_texture = \"" << em.base_texture << "\"\n"
+       << "       source_kind  = " << em.source_kind << "\n\n";
+}
+
+void diag_walk_node(IGameNode* node, std::ostringstream& os)
+{
+    if (!node) return;
+    if (IGameObject* obj = node->GetIGameObject()) {
+        if (obj->GetIGameType() == IGameObject::IGAME_MESH) {
+            log_node_material(node, os);
+        }
+        node->ReleaseIGameObject();
+    }
+    for (int i = 0; i < node->GetChildCount(); ++i) {
+        diag_walk_node(node->GetNodeChild(i), os);
+    }
+}
+
+// ---- Main entry points ----------------------------------------------------
+
 bool walk_scene(Interface*                  /*max_interface*/,
                 alamo_format::ExportScene&  out,
                 std::string&                out_error)
@@ -204,6 +370,38 @@ bool walk_scene(Interface*                  /*max_interface*/,
 
     igame->ReleaseIGame();
     return true;
+}
+
+void log_material_diagnostics(Interface* /*max_interface*/, std::string& out_log)
+{
+    std::ostringstream os;
+    os << "max2alamo material diagnostics\n"
+       << "==============================\n\n";
+
+    IGameScene* igame = GetIGameInterface();
+    if (!igame) {
+        os << "(GetIGameInterface returned null)\n";
+        out_log += os.str();
+        return;
+    }
+    if (IGameConversionManager* cm = GetConversionManager()) {
+        cm->SetCoordSystem(IGameConversionManager::IGAME_MAX);
+    }
+    if (!igame->InitialiseIGame(false)) {
+        os << "(InitialiseIGame failed)\n";
+        out_log += os.str();
+        return;
+    }
+    igame->SetStaticFrame(0);
+
+    const int top = igame->GetTopLevelNodeCount();
+    os << "top-level node count: " << top << "\n\n";
+    for (int i = 0; i < top; ++i) {
+        diag_walk_node(igame->GetTopLevelNode(i), os);
+    }
+
+    igame->ReleaseIGame();
+    out_log += os.str();
 }
 
 }  // namespace max2alamo
