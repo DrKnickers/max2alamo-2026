@@ -153,10 +153,11 @@ ChunkNode build_texture_param(const std::string& param_name,
     return make_leaf(0x10105, std::move(p));
 }
 
-// One 144-byte vertex in the B4I4 rev-2 layout. Phase 4 fills only the
-// fields the format name references (pos / normal / uv0); the rest get
-// neutral defaults (zero UVs, zero tangent/binormal, white color, alpha=1,
-// bound to `bone_index` with weight 1).
+// One 144-byte vertex in the B4I4 rev-2 layout. Phase 4 fills pos / normal
+// / uv0 / tangent / binormal from the source mesh; the rest get neutral
+// defaults (zero UVs, white color, alpha=1, bound to `bone_index` with
+// weight 1). Phase 6b: tangent + binormal are now populated by the walker
+// (previously zero, which broke bump-mapped shaders at runtime).
 //
 // `bone_index` is the file-side bone index (same scheme used by the
 // 0x602 connection chunk minus 1). For Phase 4 every vertex of a given
@@ -177,10 +178,14 @@ void append_vertex(std::vector<std::uint8_t>& out, const ExportVertex& v,
     append_f32(out, v.uv[1]);
     // uv1, uv2, uv3 (24) -- zeros
     append_zeros(out, 24);
-    // tangent (12) -- zero
-    append_zeros(out, 12);
-    // binormal (12) -- zero
-    append_zeros(out, 12);
+    // tangent (12)
+    append_f32(out, v.tangent[0]);
+    append_f32(out, v.tangent[1]);
+    append_f32(out, v.tangent[2]);
+    // binormal (12) -- handedness sign baked in by the walker
+    append_f32(out, v.binormal[0]);
+    append_f32(out, v.binormal[1]);
+    append_f32(out, v.binormal[2]);
     // color (12) -- white
     append_f32(out, 1.0f);
     append_f32(out, 1.0f);

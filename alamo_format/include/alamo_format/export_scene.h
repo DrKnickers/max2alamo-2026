@@ -26,6 +26,16 @@ struct ExportVertex {
     std::array<float, 3> position;
     std::array<float, 3> normal;
     std::array<float, 2> uv;
+    // Tangent-space basis (Phase 6b). Required by PG's bump / normal-mapped
+    // shaders (MeshBumpColorize, RSkinBumpColorize, etc.) which sample these
+    // in the vertex shader to build the world-to-tangent matrix. Convention
+    // matches MikkTSpace (Max 2026 default): unit length, perpendicular to
+    // `normal`, with handedness baked into `binormal`'s sign such that
+    // binormal = sign * cross(normal, tangent). All-zero values are a
+    // historical default from Phase 4 and produce broken bump lighting at
+    // runtime; the scene walker now populates them from the source mesh.
+    std::array<float, 3> tangent{0.f, 0.f, 0.f};
+    std::array<float, 3> binormal{0.f, 0.f, 0.f};
 };
 
 // Material assignment for a submesh. Phase 4 ships `shader_name` and
