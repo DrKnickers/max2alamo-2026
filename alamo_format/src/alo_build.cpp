@@ -1,6 +1,7 @@
 #include "alamo_format/alo_build.h"
 
 #include "alamo_format/chunk_io.h"
+#include "alamo_format/shader_table.h"
 
 #include <cstring>
 
@@ -137,7 +138,7 @@ ChunkNode build_mesh_info(const ExportMesh& mesh) {
     return make_leaf(0x402, std::move(p));
 }
 
-// 0x10005 (TEXTURE param). Mini-chunks: 1=name, 2=value (string).
+// 0x10105 (TEXTURE param). Mini-chunks: 1=name, 2=value (string).
 ChunkNode build_texture_param(const std::string& param_name,
                               const std::string& texture_filename)
 {
@@ -151,6 +152,34 @@ ChunkNode build_texture_param(const std::string& param_name,
     p.push_back(static_cast<std::uint8_t>(texture_filename.size() + 1));
     append_cstring(p, texture_filename);
     return make_leaf(0x10105, std::move(p));
+}
+
+// 0x10103 (FLOAT param). Mini-chunks: 1=name, 2=value (1 LE float).
+ChunkNode build_float_param(const std::string& param_name, float value) {
+    std::vector<std::uint8_t> p;
+    p.push_back(kParamNameMini);
+    p.push_back(static_cast<std::uint8_t>(param_name.size() + 1));
+    append_cstring(p, param_name);
+    p.push_back(kParamValueMini);
+    p.push_back(4);
+    append_f32(p, value);
+    return make_leaf(0x10103, std::move(p));
+}
+
+// 0x10106 (FLOAT4 param). Mini-chunks: 1=name, 2=value (4 LE floats).
+// Vanilla content uses this chunk for both float3 and float4 declarations
+// in the .fxh -- float3 values get a trailing 0.0.
+ChunkNode build_float4_param(const std::string& param_name,
+                             const std::array<float, 4>& value)
+{
+    std::vector<std::uint8_t> p;
+    p.push_back(kParamNameMini);
+    p.push_back(static_cast<std::uint8_t>(param_name.size() + 1));
+    append_cstring(p, param_name);
+    p.push_back(kParamValueMini);
+    p.push_back(16);
+    for (float v : value) append_f32(p, v);
+    return make_leaf(0x10106, std::move(p));
 }
 
 // One 144-byte vertex in the B4I4 rev-2 layout. Phase 4 fills pos / normal
@@ -227,13 +256,65 @@ ChunkNode build_face_chunk(const std::vector<std::uint32_t>& indices) {
     return make_leaf(0x10004, std::move(p));
 }
 
-// 0x10100 (Submesh material): shader name + optional shader-param chunks.
+// Look up a typed parameter by name in the source ExportMaterial. Returns
+// null if the source material did not override that param -- caller falls
+// back to the shader-table default.
+const MaterialParam* find_param(const ExportMaterial& mat, std::string_view name) {
+    for (const auto& p : mat.params) {
+        if (p.name == name) return &p;
+    }
+    return nullptr;
+}
+
+// Append one typed parameter chunk according to the shader-table spec.
+// Scalar / vector params are always emitted (using the spec default when
+// the source material doesn't override). Texture params are only emitted
+// when the source material (or back-compat `base_texture` shortcut)
+// provides a non-empty filename.
+void emit_param_chunk(std::vector<ChunkNode>& kids,
+                      const ExportMaterial& mat,
+                      const shader_table::ParamSpec& spec)
+{
+    const MaterialParam* override_p = find_param(mat, spec.name);
+    switch (spec.kind) {
+        case MaterialParam::Kind::Float: {
+            const float v = override_p ? override_p->value4[0] : spec.default_value4[0];
+            kids.push_back(build_float_param(std::string(spec.name), v));
+            return;
+        }
+        case MaterialParam::Kind::Float4: {
+            const std::array<float, 4>& v = override_p ? override_p->value4 : spec.default_value4;
+            kids.push_back(build_float4_param(std::string(spec.name), v));
+            return;
+        }
+        case MaterialParam::Kind::Texture: {
+            std::string fn = override_p ? override_p->texture : std::string{};
+            // Back-compat: legacy callers populate ExportMaterial::base_texture
+            // directly instead of going through the params list.
+            if (fn.empty() && spec.name == "BaseTexture") {
+                fn = mat.base_texture;
+            }
+            if (!fn.empty()) {
+                kids.push_back(build_texture_param(std::string(spec.name), fn));
+            }
+            return;
+        }
+    }
+}
+
+// 0x10100 (Submesh material): shader name + ordered shader-param chunks.
 // Crucially, this does NOT contain the geometry -- 0x10000 is a SIBLING of
 // 0x10100 inside the parent 0x400, not a child. Mike's MAXScript reader
 // (ReadMaterial in alamo2max.ms) confirms this by walking 0x10100's
 // children for params via Next() until -1, then reading 0x10000 at the
 // next sibling level. Vanilla content (e.g. I_DEATHSTAR_SWITCH.ALO,
 // W_SUN00.ALO) follows this layout exactly.
+//
+// Phase 6c: param emission is now driven by the shader_table so each
+// shader receives its canonical ordered param list (with overrides from
+// `ExportMaterial::params` when the source material has values). For
+// shaders not in the table we fall back to the Phase 4 minimal layout
+// (just shader_name + BaseTexture).
 ChunkNode build_submesh_material(const ExportSubmesh& sub) {
     std::vector<ChunkNode> kids;
     // 0x10101: shader name.
@@ -241,10 +322,18 @@ ChunkNode build_submesh_material(const ExportSubmesh& sub) {
     append_cstring(shader_name, sub.material.shader_name);
     kids.push_back(make_leaf(0x10101, std::move(shader_name)));
 
-    // Optional 0x10105 BaseTexture if a texture was extracted.
-    if (!sub.material.base_texture.empty()) {
+    if (shader_table::contains(sub.material.shader_name)) {
+        // Known shader: emit exactly the params the table declares, in
+        // canonical order. A zero-param entry (alDefault) emits nothing.
+        for (const auto& spec : shader_table::params_for(sub.material.shader_name)) {
+            emit_param_chunk(kids, sub.material, spec);
+        }
+    } else if (!sub.material.base_texture.empty()) {
+        // Unknown shader: keep the Phase 4 fallback of emitting just a
+        // BaseTexture entry if one is provided.
         kids.push_back(build_texture_param("BaseTexture", sub.material.base_texture));
     }
+
     return make_container(0x10100, std::move(kids));
 }
 
