@@ -15,6 +15,7 @@
 #include <IGame/IConversionManager.h>
 
 #include "alamo_format/shader_table.h"
+#include "alamo_format/skin_weights.h"
 
 #include <algorithm>
 #include <limits>
@@ -280,31 +281,44 @@ struct SkinContext {
     std::uint32_t fallback_bone_index = 0;  // 0 = Root sentinel
 };
 
-// Find the bone with the highest weight for `vert_idx` in the skin, map
-// it to an ExportScene bone index via the bone_map, and return that
-// index. Falls back to ctx.fallback_bone_index when there's no skin
-// data, no bones, or the bone isn't in the map.
-std::uint32_t resolve_dominant_bone(const SkinContext& ctx, int vert_idx)
+// Pull every (ExportScene bone index, weight) pair for `vert_idx` from
+// the IGameSkin modifier and pack the top 4 by weight (renormalized to
+// sum to 1.0) into a VertexBinding.
+//
+// Bones whose IGameNode -> INode -> bone_map lookup fails are dropped
+// defensively -- not folded into the fallback -- because a non-mapped
+// bone usually means the Max scene has a skin influence pointing at a
+// node we don't export (e.g. a stray Biped subtype the walker hasn't
+// learned yet in Phase 5). Mapping it to the per-mesh fallback would
+// quietly bind chunks of geometry to the wrong place; dropping it
+// preserves the remaining mappable bones and surfaces the issue as a
+// missing influence rather than a wrong one.
+//
+// If the input is fully empty / all-dropped / all-zero-weight, falls
+// back to a rigid binding (slot 0 = ctx.fallback_bone_index, weight =
+// 1). For static meshes the caller short-circuits before even getting
+// here.
+alamo_format::skin::VertexBinding
+resolve_multi_bone(const SkinContext& ctx, int vert_idx)
 {
-    if (!ctx.skin || !ctx.bone_map) return ctx.fallback_bone_index;
+    if (!ctx.skin || !ctx.bone_map) {
+        return alamo_format::skin::top4_normalized({}, ctx.fallback_bone_index);
+    }
+    std::vector<alamo_format::skin::BoneWeight> influences;
     const int n_bones = ctx.skin->GetNumberOfBones(vert_idx);
-    int best_b = -1;
-    float best_w = -1.f;
+    influences.reserve(static_cast<std::size_t>(n_bones));
     for (int b = 0; b < n_bones; ++b) {
         const float w = ctx.skin->GetWeight(vert_idx, b);
-        if (w > best_w) {
-            best_w = w;
-            best_b = b;
-        }
+        if (w <= 0.f) continue;
+        IGameNode* gbone = ctx.skin->GetIGameBone(vert_idx, b);
+        if (!gbone) continue;
+        INode* inode = gbone->GetMaxNode();
+        if (!inode) continue;
+        auto it = ctx.bone_map->find(inode);
+        if (it == ctx.bone_map->end()) continue;
+        influences.push_back({it->second, w});
     }
-    if (best_b < 0) return ctx.fallback_bone_index;
-    IGameNode* gbone = ctx.skin->GetIGameBone(vert_idx, best_b);
-    if (!gbone) return ctx.fallback_bone_index;
-    INode* inode = gbone->GetMaxNode();
-    if (!inode) return ctx.fallback_bone_index;
-    auto it = ctx.bone_map->find(inode);
-    if (it == ctx.bone_map->end()) return ctx.fallback_bone_index;
-    return it->second;
+    return alamo_format::skin::top4_normalized(influences, ctx.fallback_bone_index);
 }
 
 // Build one ExportMesh from an IGameNode wrapping an IGameMesh. Returns
@@ -381,19 +395,16 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh,
                                                 /*ObjectSpace=*/true);
             v.normal = { nrm.x, nrm.y, nrm.z };
 
-            // Per-vertex skin binding. For static meshes ctx.skin == null
-            // and resolve_dominant_bone returns ctx.fallback_bone_index
-            // (the per-mesh attachment bone allocated by walk_node before
-            // build_mesh ran). For skinned meshes we look up the bone
-            // with the highest weight in the IGameSkin modifier.
-            // Phase 5b emits single-bone rigid attachment (weight=1.0 in
-            // slot 0); Phase 5c will populate slots 1..3 for smooth
-            // multi-bone deformation.
-            v.bone_indices = {
-                resolve_dominant_bone(skin_ctx, max_vert_idx),
-                0u, 0u, 0u,
-            };
-            v.weights = { 1.f, 0.f, 0.f, 0.f };
+            // Per-vertex skin binding (Phase 5c). For static meshes
+            // skin_ctx.skin == null and resolve_multi_bone returns a
+            // rigid binding to ctx.fallback_bone_index (the per-mesh
+            // attachment bone allocated by walk_node). For skinned
+            // meshes we read every (bone, weight) pair from the
+            // IGameSkin modifier, keep the top 4 by weight, and
+            // renormalize so slots 0..3 sum to 1.0.
+            const auto binding = resolve_multi_bone(skin_ctx, max_vert_idx);
+            v.bone_indices = binding.bone_indices;
+            v.weights      = binding.weights;
 
             // Map channel 1 = standard UV channel in Max.
             const int tex_idx = static_cast<int>(face->texCoord[corner]);
@@ -519,12 +530,11 @@ void walk_bones(IGameNode* node, std::uint32_t parent_bone_idx,
 //     in. The mesh connects to that bone; every vertex's slot-0 bone
 //     index references it.
 //
-//   - Skinned (Phase 5b): no per-mesh bone. The mesh connects to Root
-//     (matching vanilla -- see AI_DACTILLION.ALO's "object#0 -> bone#0
-//     (Root)" pattern); each vertex's slot-0 bone index points at its
-//     dominant bone in the real hierarchy via the IGameSkin modifier.
-//     Multi-bone weighted skinning (slots 1..3 with non-zero weights)
-//     is Phase 5c.
+//   - Skinned (Phase 5b/5c): no per-mesh bone. The mesh connects to
+//     Root (matching vanilla -- see AI_DACTILLION.ALO's "object#0 ->
+//     bone#0 (Root)" pattern); each vertex's top 4 influences (by
+//     weight) populate slots 0..3 of bone_indices / weights via the
+//     IGameSkin modifier, renormalized to sum to 1.0.
 void walk_node(IGameNode* node, alamo_format::ExportScene& scene,
                const std::unordered_map<INode*, std::uint32_t>& bone_map)
 {
