@@ -11,6 +11,7 @@ add_executable(alamo_format_tests
     chunk_reader_test.cpp
     chunk_writer_test.cpp
     chunk_tree_test.cpp
+    export_scene_test.cpp
 )
 target_link_libraries(alamo_format_tests PRIVATE alamo_format Catch2::Catch2WithMain)
 target_compile_features(alamo_format_tests PRIVATE cxx_std_17)

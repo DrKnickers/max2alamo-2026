@@ -40,6 +40,7 @@ set(MAX_SDK_LIB "${MAX_SDK_DIR}/lib/x64/Release")
 add_library(max2alamo SHARED
     src/plugin_entry.cpp
     src/alo_export.cpp
+    src/scene_walker.cpp
     resources/max2alamo.def
     resources/max2alamo.rc
 )
@@ -65,6 +66,8 @@ target_link_libraries(max2alamo PRIVATE
     core
     maxutil
     mesh
+    geom         # Point3 / Matrix3 helpers used by scene_walker
+    IGame        # IGameScene / IGameNode / IGameMesh
 )
 
 target_link_libraries(max2alamo PRIVATE alamo_format)
