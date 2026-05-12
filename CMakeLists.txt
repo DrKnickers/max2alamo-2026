@@ -19,6 +19,11 @@ add_subdirectory(alamo_format)
 add_subdirectory(tools/alo_dump)
 add_subdirectory(tools/alo_roundtrip)
 
+# The Max plugin only configures when the SDK is found locally. The Max SDK
+# is not redistributable, so CI cannot build it; see docs/build.md for the
+# local setup.
+add_subdirectory(max2alamo)
+
 if(BUILD_TESTING)
     add_subdirectory(alamo_format/tests)
 endif()
