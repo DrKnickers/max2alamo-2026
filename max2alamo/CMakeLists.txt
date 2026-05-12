@@ -68,6 +68,7 @@ target_link_libraries(max2alamo PRIVATE
     mesh
     geom         # Point3 / Matrix3 helpers used by scene_walker
     IGame        # IGameScene / IGameNode / IGameMesh
+    bmm          # BitmapInfo::Name (used when reading DXMaterial bitmaps)
 )
 
 target_link_libraries(max2alamo PRIVATE alamo_format)

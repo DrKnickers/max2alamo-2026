@@ -25,4 +25,13 @@ bool walk_scene(Interface*                  max_interface,
                 alamo_format::ExportScene&  out,
                 std::string&                out_error);
 
+// Walk the scene a second time and emit a human-readable diagnostic
+// report describing what the walker saw on the material side -- node
+// name, material class, texture-map slot IDs and filenames, DXMaterial
+// effect file. Written verbatim into `out_log` (which is appended to;
+// caller controls flushing to disk). Used by DoExport to drop a
+// .export.log next to the .alo for debugging "why did we extract THIS
+// texture?" questions.
+void log_material_diagnostics(Interface* max_interface, std::string& out_log);
+
 }  // namespace max2alamo
