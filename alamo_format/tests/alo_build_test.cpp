@@ -70,6 +70,30 @@ TEST_CASE("Skeleton info is exactly 128 bytes; first u32 is bone count") {
     }
 }
 
+TEST_CASE("Default identity bone matrix on disk is exactly the column-major identity Mike's reader expects") {
+    auto tree = build_alo(minimal_cube_scene());
+    // Root bone is tree[0].children[1]. Its 0x206 leaf is at children[1].
+    // The 60-byte payload: parent(4) + visible(4) + billboard(4) + 12 floats.
+    const ChunkNode& bone_data = tree[0].children[1].children[1];
+    REQUIRE(bone_data.id == 0x206);
+    REQUIRE(bone_data.payload.size() == 60);
+
+    // Read the 12 floats at offset 12.
+    std::array<float, 12> m;
+    for (std::size_t i = 0; i < 12; ++i) {
+        std::memcpy(&m[i], bone_data.payload.data() + 12 + i * 4, 4);
+    }
+
+    // Mike's reader does:
+    //   bone.transform = Matrix3 [c1,c5,c9] [c2,c6,c10] [c3,c7,c11] [c4,c8,c12]
+    // For identity that requires:
+    //   c1=1 c2=0 c3=0 c4=0  c5=0 c6=1 c7=0 c8=0  c9=0 c10=0 c11=1 c12=0
+    // (c is 1-indexed in MAXScript; our array is 0-indexed so c[N] == m[N-1].)
+    REQUIRE(m[0]  == 1.f); REQUIRE(m[1]  == 0.f); REQUIRE(m[2]  == 0.f); REQUIRE(m[3]  == 0.f);
+    REQUIRE(m[4]  == 0.f); REQUIRE(m[5]  == 1.f); REQUIRE(m[6]  == 0.f); REQUIRE(m[7]  == 0.f);
+    REQUIRE(m[8]  == 0.f); REQUIRE(m[9]  == 0.f); REQUIRE(m[10] == 1.f); REQUIRE(m[11] == 0.f);
+}
+
 TEST_CASE("Skeleton has Root + one named per-mesh bone") {
     auto tree = build_alo(minimal_cube_scene());
     // children: 0x201 info, 0x202 Root, 0x202 Cube

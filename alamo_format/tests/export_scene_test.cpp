@@ -14,13 +14,16 @@ TEST_CASE("ExportScene::with_root_bone seeds exactly one Root bone") {
     REQUIRE(s.meshes.empty());
 }
 
-TEST_CASE("Default ExportBone matrix is identity in column-major 4x3 layout") {
+TEST_CASE("Default ExportBone matrix is identity in 4x3 column-major layout") {
     ExportBone b;
-    // Columns 0..2 form the rotation; column 3 is the translation.
-    REQUIRE(b.matrix[0]  == 1.f); REQUIRE(b.matrix[1]  == 0.f); REQUIRE(b.matrix[2]  == 0.f);
-    REQUIRE(b.matrix[3]  == 0.f); REQUIRE(b.matrix[4]  == 1.f); REQUIRE(b.matrix[5]  == 0.f);
-    REQUIRE(b.matrix[6]  == 0.f); REQUIRE(b.matrix[7]  == 0.f); REQUIRE(b.matrix[8]  == 1.f);
-    REQUIRE(b.matrix[9]  == 0.f); REQUIRE(b.matrix[10] == 0.f); REQUIRE(b.matrix[11] == 0.f);
+    // 3 columns of 4 elements: col0 = (r1x, r2x, r3x, tx), etc.
+    // For identity: col0 = (1,0,0,0), col1 = (0,1,0,0), col2 = (0,0,1,0).
+    REQUIRE(b.matrix[0]  == 1.f); REQUIRE(b.matrix[1]  == 0.f);
+    REQUIRE(b.matrix[2]  == 0.f); REQUIRE(b.matrix[3]  == 0.f);
+    REQUIRE(b.matrix[4]  == 0.f); REQUIRE(b.matrix[5]  == 1.f);
+    REQUIRE(b.matrix[6]  == 0.f); REQUIRE(b.matrix[7]  == 0.f);
+    REQUIRE(b.matrix[8]  == 0.f); REQUIRE(b.matrix[9]  == 0.f);
+    REQUIRE(b.matrix[10] == 1.f); REQUIRE(b.matrix[11] == 0.f);
 }
 
 TEST_CASE("ExportMesh / ExportSubmesh / ExportVertex compose by value") {
