@@ -13,7 +13,7 @@ Without these stubs, the canonical Petroglyph authoring workflow —
 — breaks at "load." This folder fixes that by providing same-named Effects11 stubs that:
 
 - have the same parameter names, types, and `UIName` annotations as the PG shaders
-- render a simplified Blinn-Phong (or simpler) approximation in the Max viewport
+- render a simplified Blinn/Lambert approximation in the Max viewport (visual fidelity is *not* the goal — UI fidelity is)
 - exist purely Max-side; the exported `.alo` references only the shader filename, and EaW resolves it against its own `Data/Art/Shaders/` at runtime
 
 ## How `max2alamo` uses the stub
@@ -30,21 +30,64 @@ Per-parameter writeback is driven by `material_parameter_dict` (ported from Gauk
 4. Wire textures and tweak values; the viewport renders the stub's approximation.
 5. Export via `max2alamo` — the `.alo` references `<ShaderName>.fx`. AloViewer and the EaW runtime use their own real shaders.
 
-For shaders without a stub yet, use the `Alamo_Shader_Name` node user-property override as a fallback. See [docs/development-log.md](../docs/development-log.md) for the stub roll-out plan.
+For shaders without a stub yet, use the `Alamo_Shader_Name` node user-property override as a fallback.
+
+## How these stubs are generated
+
+The whole folder is auto-generated from a manifest in [scripts/generate-max-preview-stubs.py](../scripts/generate-max-preview-stubs.py). Each manifest entry pairs a shader filename with its param list (sourced from Gaukler's `material_parameter_dict` and the PG `.fxh` headers in `corruption/Mods/Empire-at-War-Source-Files/src/FOC/Data/Art/Shaders/`) and a render mode (`lit-opaque` / `lit-alpha` / `lit-additive` / `flat-color` / `flat-alpha`).
+
+To add a stub for a new PG shader: edit the `SHADERS` list in that script and re-run `python scripts/generate-max-preview-stubs.py`. Do not hand-edit the generated `.fx` files — the next regeneration will clobber edits.
 
 ## DO NOT
 
 - **Do not** copy these `.fx` files into an EaW mod's `Data/Art/Shaders/` folder. The engine has its own real shaders by these names; replacing them with these stubs will visibly downgrade in-game rendering.
 - **Do not** treat the stub's preview as authoritative. It's "close enough for authoring," not pixel-perfect parity with the engine.
+- **Do not** hand-edit the generated `.fx` files — see "How these stubs are generated" above.
 
-## Status
+## Coverage
 
-| Shader                | Stub | Verified in Max 2026 |
-|-----------------------|------|----------------------|
-| `alDefault.fx`        | ✓    | _pending_            |
-| `MeshBumpColorize.fx` | _planned_ | —              |
-| `MeshAlpha.fx`        | _planned_ | —              |
-| `MeshShadowVolume.fx` | _planned_ | —              |
-| `MeshAdditive.fx`     | _planned_ | —              |
-| `MeshCollision.fx`    | _planned_ | —              |
-| `MeshGloss.fx`        | _planned_ | —              |
+All Petroglyph shaders from `corruption/Mods/Empire-at-War-Source-Files/src/FOC/Data/Art/Shaders/` are covered. The `Loads in Max 2026` column marks shaders whose end-to-end workflow (load → preview → export → AloViewer round-trip) has been validated.
+
+| Shader                          | Stub | Loads in Max 2026 |
+|---------------------------------|:----:|:-----------------:|
+| `alDefault.fx`                  |  ✓   |        ✓          |
+| `BatchMeshAlpha.fx`             |  ✓   |        —          |
+| `BatchMeshGloss.fx`             |  ✓   |        —          |
+| `BlobStencilMasked.fx`          |  ✓   |        —          |
+| `Grass.fx`                      |  ✓   |        —          |
+| `MeshAdditive.fx`               |  ✓   |        —          |
+| `MeshAdditiveOffset.fx`         |  ✓   |        —          |
+| `MeshAdditiveVColor.fx`         |  ✓   |        —          |
+| `MeshAlpha.fx`                  |  ✓   |        —          |
+| `MeshAlphaGloss.fx`             |  ✓   |        —          |
+| `MeshAlphaScroll.fx`            |  ✓   |        —          |
+| `MeshBumpColorize.fx`           |  ✓   |        —          |
+| `MeshBumpReflectColorize.fx`    |  ✓   |        —          |
+| `MeshCollision.fx`              |  ✓   |        —          |
+| `MeshGloss.fx`                  |  ✓   |        —          |
+| `MeshGlossColorize.fx`          |  ✓   |        —          |
+| `MeshHeat.fx`                   |  ✓   |        —          |
+| `MeshLightVisualize.fx`         |  ✓   |        —          |
+| `MeshOccludedUnit.fx`           |  ✓   |        —          |
+| `MeshShadowVolume.fx`           |  ✓   |        —          |
+| `MeshShield.fx`                 |  ✓   |        —          |
+| `MeshSolidColor.fx`             |  ✓   |        —          |
+| `Nebula.fx`                     |  ✓   |        —          |
+| `Planet.fx`                     |  ✓   |        —          |
+| `RSkinAdditive.fx`              |  ✓   |        —          |
+| `RSkinAdditiveVColor.fx`        |  ✓   |        —          |
+| `RSkinAlpha.fx`                 |  ✓   |        —          |
+| `RSkinAlphaGloss.fx`            |  ✓   |        —          |
+| `RSkinBumpColorize.fx`          |  ✓   |        —          |
+| `RSkinBumpReflectColorize.fx`   |  ✓   |        —          |
+| `RSkinGloss.fx`                 |  ✓   |        —          |
+| `RSkinGlossColorize.fx`         |  ✓   |        —          |
+| `RSkinHeat.fx`                  |  ✓   |        —          |
+| `RSkinOccludedUnit.fx`          |  ✓   |        —          |
+| `RSkinShadowVolume.fx`          |  ✓   |        —          |
+| `Skydome.fx`                    |  ✓   |        —          |
+| `TerrainMeshBump.fx`            |  ✓   |        —          |
+| `TerrainMeshGloss.fx`           |  ✓   |        —          |
+| `Tree.fx`                       |  ✓   |        —          |
+
+The dialect was proven end-to-end on `alDefault.fx`: load in Max 2026 DirectX Shader material → apply to cube → export via `max2alamo` → open in AloViewer → renders with `Material: alDefault.fx` correctly resolved. All other stubs share the same Effects11 template (technique11 + `vs_5_0`/`ps_5_0` profiles + the same auto-bound WorldViewProjection / WorldInverseTranspose semantics) so they should load on the same basis, but each one needs an actual click-test before getting a ✓ in the second column.
