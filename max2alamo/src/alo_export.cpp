@@ -153,6 +153,18 @@ int AloExport::DoExport(const TCHAR*  name,
         return IMPEXP_FAIL;
     }
 
+    // 4.5 Drop a sibling .export.log explaining what we saw on the
+    // material side, for debugging "why did THIS texture get exported"
+    // questions. Best-effort -- failure to write the log doesn't fail
+    // the export.
+    {
+        std::string log;
+        log_material_diagnostics(i, log);
+        std::wstring log_path = std::wstring(name) + L".export.log";
+        std::ofstream lf(log_path, std::ios::binary | std::ios::trunc);
+        if (lf) lf.write(log.data(), static_cast<std::streamsize>(log.size()));
+    }
+
     // 5. Success message.
     if (!suppress_prompts) {
         TCHAR msg[512];
