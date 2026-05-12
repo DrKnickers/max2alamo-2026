@@ -2,9 +2,11 @@
 
 #include <Max.h>
 #include <maxapi.h>
+#include <stdmat.h>   // ID_DI = standard-material diffuse slot constant
 
 #include <IGame/IGame.h>
 #include <IGame/IGameObject.h>
+#include <IGame/IGameMaterial.h>
 #include <IGame/IConversionManager.h>
 
 #include <algorithm>
@@ -25,6 +27,41 @@ std::string to_utf8(const TCHAR* s)
     std::string out(static_cast<std::size_t>(len - 1), '\0');
     WideCharToMultiByte(CP_UTF8, 0, s, -1, out.data(), len, nullptr, nullptr);
     return out;
+}
+
+// Strip the directory portion from a file path. Alamo material chunks
+// store just the filename (e.g. "tex_box.tga"); the engine resolves
+// against its own texture search paths.
+std::string basename(const std::string& path)
+{
+    auto pos = path.find_last_of("\\/");
+    return (pos == std::string::npos) ? path : path.substr(pos + 1);
+}
+
+// Look up the diffuse-slot bitmap filename on a Max material. Returns
+// empty string if no diffuse texture is set or the material isn't a
+// Standard material (in which case the engine will fall back to its
+// default for the chosen shader). Multi/Sub-Object materials get
+// flattened to their first sub-material for Phase 4 -- multi-material
+// support comes later.
+std::string extract_diffuse_texture(IGameMaterial* mat)
+{
+    if (!mat) return {};
+    if (mat->GetSubMaterialCount() > 0) {
+        if (IGameMaterial* sub = mat->GetSubMaterial(0)) {
+            return extract_diffuse_texture(sub);
+        }
+    }
+    const int n = mat->GetNumberOfTextureMaps();
+    for (int i = 0; i < n; ++i) {
+        IGameTextureMap* tex = mat->GetIGameTextureMap(i);
+        if (!tex) continue;
+        if (tex->GetStdMapSlot() != ID_DI) continue;
+        const TCHAR* fn = tex->GetBitmapFileName();
+        if (!fn) continue;
+        return basename(to_utf8(fn));
+    }
+    return {};
 }
 
 void update_bbox(alamo_format::ExportMesh& mesh, const Point3& p)
@@ -53,8 +90,8 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh, alamo_format::ExportMesh& out
     // Multi-material support arrives later (face->matID buckets per
     // ExportSubmesh).
     alamo_format::ExportSubmesh sub;
-    sub.material.shader_name = "MeshAlpha.fx";
-    sub.material.base_texture.clear();   // material extraction is Phase 4c
+    sub.material.shader_name  = "MeshAlpha.fx";
+    sub.material.base_texture = extract_diffuse_texture(node->GetNodeMaterial());
     sub.vertices.reserve(static_cast<std::size_t>(face_count) * 3u);
     sub.indices.reserve(static_cast<std::size_t>(face_count) * 3u);
 
