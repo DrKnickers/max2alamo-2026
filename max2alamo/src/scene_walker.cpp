@@ -11,6 +11,7 @@
 #include <IGame/IGame.h>
 #include <IGame/IGameObject.h>
 #include <IGame/IGameMaterial.h>
+#include <IGame/IGameModifier.h>
 #include <IGame/IConversionManager.h>
 
 #include "alamo_format/shader_table.h"
@@ -264,10 +265,54 @@ void update_bbox(alamo_format::ExportMesh& mesh, const Point3& p)
     mesh.bbox_max[2] = std::max(mesh.bbox_max[2], p.z);
 }
 
+// Walker-state passed into build_mesh so each vertex emission knows
+// whether to use per-vertex skinning or rigid attachment to a per-mesh
+// bone. `skin` is null for static / unskinned meshes; otherwise it's
+// the IGameSkin modifier on the mesh, queried per Max-vertex-index.
+// `bone_map` resolves IGameSkin's bone IGameNodes back to ExportScene
+// bone indices (populated by walk_bones). `fallback_bone_index` is the
+// rigid-attachment fallback used for static meshes AND for any skinned
+// vertex whose dominant bone isn't in the map (defensive: keeps the
+// geometry from collapsing to Root if a bone got dropped).
+struct SkinContext {
+    IGameSkin* skin = nullptr;
+    const std::unordered_map<INode*, std::uint32_t>* bone_map = nullptr;
+    std::uint32_t fallback_bone_index = 0;  // 0 = Root sentinel
+};
+
+// Find the bone with the highest weight for `vert_idx` in the skin, map
+// it to an ExportScene bone index via the bone_map, and return that
+// index. Falls back to ctx.fallback_bone_index when there's no skin
+// data, no bones, or the bone isn't in the map.
+std::uint32_t resolve_dominant_bone(const SkinContext& ctx, int vert_idx)
+{
+    if (!ctx.skin || !ctx.bone_map) return ctx.fallback_bone_index;
+    const int n_bones = ctx.skin->GetNumberOfBones(vert_idx);
+    int best_b = -1;
+    float best_w = -1.f;
+    for (int b = 0; b < n_bones; ++b) {
+        const float w = ctx.skin->GetWeight(vert_idx, b);
+        if (w > best_w) {
+            best_w = w;
+            best_b = b;
+        }
+    }
+    if (best_b < 0) return ctx.fallback_bone_index;
+    IGameNode* gbone = ctx.skin->GetIGameBone(vert_idx, best_b);
+    if (!gbone) return ctx.fallback_bone_index;
+    INode* inode = gbone->GetMaxNode();
+    if (!inode) return ctx.fallback_bone_index;
+    auto it = ctx.bone_map->find(inode);
+    if (it == ctx.bone_map->end()) return ctx.fallback_bone_index;
+    return it->second;
+}
+
 // Build one ExportMesh from an IGameNode wrapping an IGameMesh. Returns
 // std::nullopt-style empty optional via the bool return; mesh is filled
 // only on success.
-bool build_mesh(IGameNode* node, IGameMesh* gmesh, alamo_format::ExportMesh& out)
+bool build_mesh(IGameNode* node, IGameMesh* gmesh,
+                const SkinContext& skin_ctx,
+                alamo_format::ExportMesh& out)
 {
     out.name = to_utf8(node->GetName());
 
@@ -326,8 +371,8 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh, alamo_format::ExportMesh& out
         for (int corner = 0; corner < 3; ++corner) {
             alamo_format::ExportVertex v;
 
-            const Point3 pos = gmesh->GetVertex(static_cast<int>(face->vert[corner]),
-                                                /*ObjectSpace=*/true);
+            const int max_vert_idx = static_cast<int>(face->vert[corner]);
+            const Point3 pos = gmesh->GetVertex(max_vert_idx, /*ObjectSpace=*/true);
             v.position = { pos.x, pos.y, pos.z };
             update_bbox(out, pos);
             bbox_seeded = true;
@@ -335,6 +380,20 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh, alamo_format::ExportMesh& out
             const Point3 nrm = gmesh->GetNormal(static_cast<int>(face->norm[corner]),
                                                 /*ObjectSpace=*/true);
             v.normal = { nrm.x, nrm.y, nrm.z };
+
+            // Per-vertex skin binding. For static meshes ctx.skin == null
+            // and resolve_dominant_bone returns ctx.fallback_bone_index
+            // (the per-mesh attachment bone allocated by walk_node before
+            // build_mesh ran). For skinned meshes we look up the bone
+            // with the highest weight in the IGameSkin modifier.
+            // Phase 5b emits single-bone rigid attachment (weight=1.0 in
+            // slot 0); Phase 5c will populate slots 1..3 for smooth
+            // multi-bone deformation.
+            v.bone_indices = {
+                resolve_dominant_bone(skin_ctx, max_vert_idx),
+                0u, 0u, 0u,
+            };
+            v.weights = { 1.f, 0.f, 0.f, 0.f };
 
             // Map channel 1 = standard UV channel in Max.
             const int tex_idx = static_cast<int>(face->texCoord[corner]);
@@ -418,8 +477,12 @@ bool is_exportable_bone(IGameNode* node)
 // ancestor that is itself an exportable bone. Top-level Max bones (or
 // bones whose Max parents are not exportable) get parent_bone_idx = 0
 // = our synthetic Root.
+//
+// Phase 5b: `bone_map` records (INode* -> ExportScene bone index) for
+// every emitted bone, so walk_node can resolve IGameSkin's bone refs.
 void walk_bones(IGameNode* node, std::uint32_t parent_bone_idx,
-                alamo_format::ExportScene& scene)
+                alamo_format::ExportScene& scene,
+                std::unordered_map<INode*, std::uint32_t>& bone_map)
 {
     if (!node) return;
     std::uint32_t my_idx = parent_bone_idx;
@@ -437,16 +500,33 @@ void walk_bones(IGameNode* node, std::uint32_t parent_bone_idx,
         const GMatrix local_tm = node->GetLocalTM();
         bone.matrix = encode_matrix3(local_tm.ExtractMatrix3());
         my_idx = static_cast<std::uint32_t>(scene.bones.size());
+        if (INode* max_inode = node->GetMaxNode()) {
+            bone_map[max_inode] = my_idx;
+        }
         scene.bones.push_back(std::move(bone));
     }
     for (int i = 0; i < node->GetChildCount(); ++i) {
-        walk_bones(node->GetNodeChild(i), my_idx, scene);
+        walk_bones(node->GetNodeChild(i), my_idx, scene, bone_map);
     }
 }
 
 // Recursively walk an IGameNode and its children, appending exportable
-// meshes (and a per-mesh attachment bone) to `scene`.
-void walk_node(IGameNode* node, alamo_format::ExportScene& scene)
+// meshes to `scene`. Two paths depending on whether the mesh has a Skin
+// modifier:
+//
+//   - Static / unskinned (Phase 4c): allocate a synthetic per-mesh
+//     attachment bone parented to Root with the mesh's WorldTM baked
+//     in. The mesh connects to that bone; every vertex's slot-0 bone
+//     index references it.
+//
+//   - Skinned (Phase 5b): no per-mesh bone. The mesh connects to Root
+//     (matching vanilla -- see AI_DACTILLION.ALO's "object#0 -> bone#0
+//     (Root)" pattern); each vertex's slot-0 bone index points at its
+//     dominant bone in the real hierarchy via the IGameSkin modifier.
+//     Multi-bone weighted skinning (slots 1..3 with non-zero weights)
+//     is Phase 5c.
+void walk_node(IGameNode* node, alamo_format::ExportScene& scene,
+               const std::unordered_map<INode*, std::uint32_t>& bone_map)
 {
     if (!node) return;
 
@@ -456,24 +536,34 @@ void walk_node(IGameNode* node, alamo_format::ExportScene& scene)
             // InitializeData is required before any mesh accessor calls.
             if (obj->InitializeData()) {
                 IGameMesh* gmesh = static_cast<IGameMesh*>(obj);
+                IGameSkin* skin  = obj->GetIGameSkin();
+                const bool is_skinned = (skin != nullptr);
+
+                SkinContext ctx;
+                ctx.skin     = skin;
+                ctx.bone_map = &bone_map;
+
+                // Pre-allocate the per-mesh attachment bone for static
+                // meshes so build_mesh's per-vertex resolver can refer
+                // to it via SkinContext::fallback_bone_index.
+                alamo_format::ExportBone synth_bone;
+                std::uint32_t connect_bone_index = 0;  // 0 = Root by default (skinned path)
+                if (!is_skinned) {
+                    synth_bone.name           = to_utf8(node->GetName());
+                    synth_bone.parent_index   = 0;          // child of Root
+                    synth_bone.visible        = true;
+                    synth_bone.billboard_mode = 0;
+                    synth_bone.matrix = encode_matrix3(node->GetWorldTM().ExtractMatrix3());
+                    connect_bone_index = static_cast<std::uint32_t>(scene.bones.size());
+                    ctx.fallback_bone_index = connect_bone_index;
+                }
+
                 alamo_format::ExportMesh mesh;
-                if (build_mesh(node, gmesh, mesh)) {
-                    // Allocate the per-mesh attachment bone before pushing
-                    // the mesh, so the mesh's bone_index is correct.
-                    alamo_format::ExportBone bone;
-                    bone.name           = mesh.name;
-                    bone.parent_index   = 0;          // child of Root
-                    bone.visible        = true;
-                    bone.billboard_mode = 0;
-                    // Vertices in build_mesh are read in object space. Bake
-                    // the node's world transform into the bone so the mesh
-                    // lands at its Max world position. Phase 5b will rework
-                    // this when meshes have a Skin modifier (they'll attach
-                    // to a real bone in the hierarchy instead of getting a
-                    // synthetic per-mesh bone here).
-                    bone.matrix = encode_matrix3(node->GetWorldTM().ExtractMatrix3());
-                    mesh.bone_index     = static_cast<std::uint32_t>(scene.bones.size());
-                    scene.bones.push_back(std::move(bone));
+                if (build_mesh(node, gmesh, ctx, mesh)) {
+                    mesh.bone_index = connect_bone_index;
+                    if (!is_skinned) {
+                        scene.bones.push_back(std::move(synth_bone));
+                    }
                     scene.meshes.push_back(std::move(mesh));
                 }
             }
@@ -482,7 +572,7 @@ void walk_node(IGameNode* node, alamo_format::ExportScene& scene)
     }
 
     for (int i = 0; i < node->GetChildCount(); ++i) {
-        walk_node(node->GetNodeChild(i), scene);
+        walk_node(node->GetNodeChild(i), scene, bone_map);
     }
 }
 
@@ -535,6 +625,13 @@ void log_node_material(IGameNode* node, std::ostringstream& os)
                       "General -> 'Tangents and Bitangents' on)";
             }
             os << "\n";
+            // Phase 5b: skin presence.
+            if (IGameSkin* skin = obj->GetIGameSkin()) {
+                os << "  skin: yes  (" << skin->GetNumOfSkinnedVerts()
+                   << " skinned verts; connects to Root, per-vertex bone refs)\n";
+            } else {
+                os << "  skin: no   (rigid attachment to per-mesh synthetic bone)\n";
+            }
         }
         node->ReleaseIGameObject();
     }
@@ -677,14 +774,18 @@ bool walk_scene(Interface*                  /*max_interface*/,
     // Pass 1 (Phase 5a): real Max bones with local-to-parent matrices.
     // Must run before the mesh walk so scene.bones[0..N] are the real
     // skeleton before walk_node appends synthetic per-mesh bones.
+    // bone_map records (Max INode* -> ExportScene bone index) for the
+    // mesh-walk's skin resolver.
+    std::unordered_map<INode*, std::uint32_t> bone_map;
     for (int i = 0; i < top_count; ++i) {
-        walk_bones(igame->GetTopLevelNode(i), /*parent_bone_idx=*/0, out);
+        walk_bones(igame->GetTopLevelNode(i), /*parent_bone_idx=*/0, out, bone_map);
     }
 
-    // Pass 2: meshes + their synthetic per-mesh attachment bones (Phase 4c
-    // convention). Phase 5b will switch skinned meshes off this path.
+    // Pass 2: meshes. Skinned meshes attach to Root and reference real
+    // bones per-vertex; static meshes still get a synthetic per-mesh
+    // attachment bone (Phase 4c).
     for (int i = 0; i < top_count; ++i) {
-        walk_node(igame->GetTopLevelNode(i), out);
+        walk_node(igame->GetTopLevelNode(i), out, bone_map);
     }
 
     igame->ReleaseIGame();
