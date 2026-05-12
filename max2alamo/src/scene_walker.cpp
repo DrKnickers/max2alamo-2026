@@ -259,8 +259,25 @@ void walk_node(IGameNode* node, alamo_format::ExportScene& scene)
                     bone.parent_index   = 0;          // child of Root
                     bone.visible        = true;
                     bone.billboard_mode = 0;
-                    // Identity matrix is the default; Phase 5 will bake
-                    // the node's world transform here.
+                    // Vertices in build_mesh are read in object space. Bake
+                    // the node's world transform into the bone so the mesh
+                    // lands at its Max world position. Without this, every
+                    // mesh stacks at the origin.
+                    const GMatrix world_tm = node->GetWorldTM();
+                    const Matrix3 m3 = world_tm.ExtractMatrix3();
+                    const Point3 row0 = m3.GetRow(0);  // X axis
+                    const Point3 row1 = m3.GetRow(1);  // Y axis
+                    const Point3 row2 = m3.GetRow(2);  // Z axis
+                    const Point3 trn  = m3.GetRow(3);  // translation
+                    // Column-major-by-element layout per export_scene.h:
+                    //   column 0 = (r1x, r2x, r3x, tx)
+                    //   column 1 = (r1y, r2y, r3y, ty)
+                    //   column 2 = (r1z, r2z, r3z, tz)
+                    bone.matrix = {
+                        row0.x, row1.x, row2.x, trn.x,
+                        row0.y, row1.y, row2.y, trn.y,
+                        row0.z, row1.z, row2.z, trn.z,
+                    };
                     mesh.bone_index     = static_cast<std::uint32_t>(scene.bones.size());
                     scene.bones.push_back(std::move(bone));
                     scene.meshes.push_back(std::move(mesh));
