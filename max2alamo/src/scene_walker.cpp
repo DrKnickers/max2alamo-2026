@@ -13,10 +13,13 @@
 #include <IGame/IGameMaterial.h>
 #include <IGame/IConversionManager.h>
 
+#include "alamo_format/shader_table.h"
+
 #include <algorithm>
 #include <limits>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 namespace max2alamo {
 
@@ -71,7 +74,103 @@ struct ExtractedMaterial {
     std::string base_texture;  // diffuse / first-non-empty bitmap, basename only
     std::string source_kind;   // diagnostic tag -- "Standard", "DXMaterial", "Multi -> ...",
                                // "UserProp(Alamo_Shader_Name)+Standard", etc.
+    std::vector<alamo_format::MaterialParam> params;  // typed parameter values
+                                                      // pulled from the source material
+                                                      // ParamBlock (Phase 6c).
 };
+
+// Read every parameter declared in `pblock` and convert it to a
+// MaterialParam. Used on the DirectX Shader material's ParamBlock(0)
+// which (per IDxMaterial docs) hosts the effect's parameters with names
+// matching the .fx file. Unknown types are skipped silently -- the
+// writer-side shader_table will fill them in with defaults.
+std::vector<alamo_format::MaterialParam> extract_pblock_params(IParamBlock2* pblock)
+{
+    using alamo_format::MaterialParam;
+    std::vector<MaterialParam> out;
+    if (!pblock) return out;
+
+    const int n = pblock->NumParams();
+    out.reserve(static_cast<std::size_t>(n));
+
+    const TimeValue t = 0;
+    Interval iv = FOREVER;
+
+    for (int i = 0; i < n; ++i) {
+        const ParamID pid = pblock->IndextoID(i);
+        const ParamDef& pdef = pblock->GetParamDef(pid);
+        if (!pdef.int_name) continue;
+        std::string name = to_utf8(pdef.int_name);
+        if (name.empty()) continue;
+
+        MaterialParam mp;
+        mp.name = std::move(name);
+
+        // Switch on the integer value: TYPE_FLOAT / TYPE_INT / TYPE_RGBA /
+        // TYPE_POINT3 / TYPE_BOOL are macros (not enum members) in the Max
+        // SDK so a `switch (pdef.type)` would warn under strict enum rules.
+        switch (static_cast<int>(pdef.type)) {
+            case TYPE_FLOAT: {
+                float v = 0.f;
+                pblock->GetValue(pid, t, v, iv);
+                mp.kind = MaterialParam::Kind::Float;
+                mp.value4 = { v, 0.f, 0.f, 0.f };
+                out.push_back(std::move(mp));
+                break;
+            }
+            case TYPE_INT: {
+                int v = 0;
+                pblock->GetValue(pid, t, v, iv);
+                mp.kind = MaterialParam::Kind::Float;
+                mp.value4 = { static_cast<float>(v), 0.f, 0.f, 0.f };
+                out.push_back(std::move(mp));
+                break;
+            }
+            case TYPE_RGBA:
+            case TYPE_FRGBA: {
+                AColor c;  // 4 floats; TYPE_RGBA leaves alpha at 1
+                pblock->GetValue(pid, t, c, iv);
+                mp.kind = MaterialParam::Kind::Float4;
+                mp.value4 = { c.r, c.g, c.b, c.a };
+                out.push_back(std::move(mp));
+                break;
+            }
+            case TYPE_POINT3: {
+                Point3 p;
+                pblock->GetValue(pid, t, p, iv);
+                mp.kind = MaterialParam::Kind::Float4;
+                mp.value4 = { p.x, p.y, p.z, 0.f };  // 4th element pads to 0 per vanilla
+                out.push_back(std::move(mp));
+                break;
+            }
+            case TYPE_POINT4: {
+                Point4 p;
+                pblock->GetValue(pid, t, p, iv);
+                mp.kind = MaterialParam::Kind::Float4;
+                mp.value4 = { p.x, p.y, p.z, p.w };
+                out.push_back(std::move(mp));
+                break;
+            }
+            case TYPE_BITMAP: {
+                PBBitmap* b = nullptr;
+                pblock->GetValue(pid, t, b, iv);
+                const TCHAR* path = (b ? b->bi.Name() : nullptr);
+                if (path && path[0]) {
+                    mp.kind = MaterialParam::Kind::Texture;
+                    mp.texture = basename(to_utf8(path));
+                    out.push_back(std::move(mp));
+                }
+                break;
+            }
+            default:
+                // Unsupported types (TYPE_INODE / TYPE_STRING / matrix /
+                // TYPE_BOOL etc.) are dropped -- the shader_table writer
+                // falls back to defaults for these param names.
+                break;
+        }
+    }
+    return out;
+}
 
 // Node-level user property name. If set on a mesh node, its value
 // overrides whatever shader name we'd otherwise pick from the material.
@@ -108,6 +207,8 @@ ExtractedMaterial extract_material(IGameMaterial* gmat)
             if (fn.length() > 0) {
                 out.shader_name = basename(to_utf8(fn.data()));
             }
+            // Effect bitmap walk gives us the BaseTexture shortcut for
+            // back-compat with legacy callers that read .base_texture.
             const int n = dx->GetNumberOfEffectBitmaps();
             for (int i = 0; i < n; ++i) {
                 if (PBBitmap* pb = dx->GetEffectBitmap(i)) {
@@ -118,6 +219,12 @@ ExtractedMaterial extract_material(IGameMaterial* gmat)
                     }
                 }
             }
+            // ParamBlock(0) hosts the effect's typed parameter values
+            // (Emissive, Diffuse, Specular, Colorization, ...). Pull
+            // them all -- the writer side filters down to whatever the
+            // shader_table declares for this shader and falls back to
+            // defaults for missing entries.
+            out.params = extract_pblock_params(maxmat->GetParamBlock(0));
             return out;
         }
     }
@@ -196,6 +303,7 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh, alamo_format::ExportMesh& out
     alamo_format::ExportSubmesh sub;
     sub.material.shader_name  = std::move(em.shader_name);
     sub.material.base_texture = std::move(em.base_texture);
+    sub.material.params       = std::move(em.params);
     sub.vertices.reserve(static_cast<std::size_t>(face_count) * 3u);
     sub.indices.reserve(static_cast<std::size_t>(face_count) * 3u);
 
@@ -442,7 +550,30 @@ void log_node_material(IGameNode* node, std::ostringstream& os)
     os << "  -> chosen for export:\n"
        << "       shader_name  = \"" << em.shader_name << "\"\n"
        << "       base_texture = \"" << em.base_texture << "\"\n"
-       << "       source_kind  = " << em.source_kind << "\n\n";
+       << "       source_kind  = " << em.source_kind << "\n";
+
+    // Per-parameter values pulled from the source ParamBlock (Phase 6c).
+    // The writer further filters these to whatever the shader_table
+    // declares for the shader, so a value listed here may or may not
+    // appear in the on-disk material chunk. Useful for diagnosing
+    // why a tweak didn't reach the .alo.
+    if (!em.params.empty()) {
+        os << "       params (" << em.params.size() << " from ParamBlock):\n";
+        for (const auto& p : em.params) {
+            os << "         " << p.name << " = ";
+            switch (p.kind) {
+                case alamo_format::MaterialParam::Kind::Float:
+                    os << p.value4[0]; break;
+                case alamo_format::MaterialParam::Kind::Float4:
+                    os << "(" << p.value4[0] << ", " << p.value4[1] << ", "
+                       << p.value4[2] << ", " << p.value4[3] << ")"; break;
+                case alamo_format::MaterialParam::Kind::Texture:
+                    os << "\"" << p.texture << "\""; break;
+            }
+            os << "\n";
+        }
+    }
+    os << "\n";
 }
 
 void diag_walk_node(IGameNode* node, std::ostringstream& os)

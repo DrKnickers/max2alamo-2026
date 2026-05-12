@@ -18,6 +18,7 @@ include(CTest)
 add_subdirectory(alamo_format)
 add_subdirectory(tools/alo_dump)
 add_subdirectory(tools/alo_roundtrip)
+add_subdirectory(tools/alo_synth)
 
 # The Max plugin only configures when the SDK is found locally. The Max SDK
 # is not redistributable, so CI cannot build it; see docs/build.md for the

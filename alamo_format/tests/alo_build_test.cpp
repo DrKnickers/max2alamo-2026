@@ -133,13 +133,134 @@ TEST_CASE("Mesh info is exactly 128 bytes; first u32 is material count") {
     REQUIRE(mat_count == 1);
 }
 
-TEST_CASE("0x10100 contains shader name + BaseTexture but NOT geometry") {
+TEST_CASE("0x10100 emits shader name + per-shader param chunks per vanilla order") {
+    // MeshAlpha.fx in the shader_table maps to:
+    //   Emissive (FLOAT4) / Diffuse (FLOAT4) / Specular (FLOAT4) /
+    //   Shininess (FLOAT) / BaseTexture (TEXTURE)
+    // Plus the 0x10101 shader-name header at the start = 6 child chunks.
     auto tree = build_alo(minimal_cube_scene());
     const ChunkNode& mat = tree[1].children[2];
     REQUIRE(mat.id == 0x10100);
+    REQUIRE(mat.children.size() == 6);
+    REQUIRE(mat.children[0].id == 0x10101);  // shader name
+    REQUIRE(mat.children[1].id == 0x10106);  // Emissive  (FLOAT4)
+    REQUIRE(mat.children[2].id == 0x10106);  // Diffuse   (FLOAT4)
+    REQUIRE(mat.children[3].id == 0x10106);  // Specular  (FLOAT4)
+    REQUIRE(mat.children[4].id == 0x10103);  // Shininess (FLOAT)
+    REQUIRE(mat.children[5].id == 0x10105);  // BaseTexture (TEXTURE)
+}
+
+TEST_CASE("0x10106 FLOAT4 chunk layout matches vanilla (name mini + value mini)") {
+    auto tree = build_alo(minimal_cube_scene());
+    const ChunkNode& mat = tree[1].children[2];
+    const ChunkNode& diffuse = mat.children[2];
+    REQUIRE(diffuse.id == 0x10106);
+    // Mini-chunk 1: type=1 (name), size=len+1, then NUL-terminated cstring
+    REQUIRE(diffuse.payload.at(0) == 1);            // kParamNameMini
+    REQUIRE(diffuse.payload.at(1) == 8);            // "Diffuse\0" = 8 bytes
+    REQUIRE(std::string(reinterpret_cast<const char*>(diffuse.payload.data() + 2),
+                        7) == "Diffuse");
+    REQUIRE(diffuse.payload.at(9) == 0);            // NUL terminator
+    // Mini-chunk 2: type=2 (value), size=16, then 4 LE floats
+    REQUIRE(diffuse.payload.at(10) == 2);           // kParamValueMini
+    REQUIRE(diffuse.payload.at(11) == 16);
+    REQUIRE(diffuse.payload.size() == 12 + 16);
+    float values[4];
+    std::memcpy(values, diffuse.payload.data() + 12, 16);
+    // MeshAlpha default Diffuse = (1, 1, 1, 1)
+    REQUIRE(values[0] == 1.f); REQUIRE(values[1] == 1.f);
+    REQUIRE(values[2] == 1.f); REQUIRE(values[3] == 1.f);
+}
+
+TEST_CASE("0x10103 FLOAT chunk layout matches vanilla (name mini + 4-byte value)") {
+    auto tree = build_alo(minimal_cube_scene());
+    const ChunkNode& mat = tree[1].children[2];
+    const ChunkNode& shininess = mat.children[4];
+    REQUIRE(shininess.id == 0x10103);
+    REQUIRE(shininess.payload.at(0) == 1);                                    // name mini
+    REQUIRE(shininess.payload.at(1) == 10);                                   // "Shininess\0"
+    REQUIRE(shininess.payload.at(12) == 2);                                   // value mini
+    REQUIRE(shininess.payload.at(13) == 4);
+    REQUIRE(shininess.payload.size() == 14 + 4);
+    float v = 0.f;
+    std::memcpy(&v, shininess.payload.data() + 14, 4);
+    REQUIRE(v == 32.f);  // MeshAlpha default Shininess
+}
+
+TEST_CASE("ExportMaterial::params overrides shader-table defaults") {
+    ExportScene s = ExportScene::with_root_bone();
+    ExportBone b; b.name = "Cube"; b.parent_index = 0; s.bones.push_back(b);
+    ExportMesh m;  m.name = "Cube"; m.bone_index = 1;
+    ExportSubmesh sub;
+    sub.material.shader_name = "MeshAlpha.fx";
+    // Override Diffuse only; Emissive / Specular / Shininess fall back
+    // to the shader-table defaults.
+    MaterialParam p; p.name = "Diffuse"; p.kind = MaterialParam::Kind::Float4;
+    p.value4 = { 0.2f, 0.4f, 0.6f, 0.8f };
+    sub.material.params.push_back(p);
+    for (int i = 0; i < 36; ++i) {
+        ExportVertex v;
+        v.position = { float(i), 0.f, 0.f }; v.normal = { 0, 0, 1 }; v.uv = { 0, 0 };
+        sub.vertices.push_back(v);
+        sub.indices.push_back(static_cast<std::uint32_t>(i));
+    }
+    m.submeshes.push_back(std::move(sub));
+    s.meshes.push_back(std::move(m));
+
+    auto tree = build_alo(s);
+    const ChunkNode& mat = tree[1].children[2];
+    const ChunkNode& diffuse = mat.children[2];
+    REQUIRE(diffuse.id == 0x10106);
+    float v[4];
+    std::memcpy(v, diffuse.payload.data() + 12, 16);
+    REQUIRE(v[0] == 0.2f);
+    REQUIRE(v[1] == 0.4f);
+    REQUIRE(v[2] == 0.6f);
+    REQUIRE(v[3] == 0.8f);
+}
+
+TEST_CASE("alDefault shader emits no params (empty entry in shader_table)") {
+    ExportScene s = ExportScene::with_root_bone();
+    ExportBone b; b.name = "M"; b.parent_index = 0; s.bones.push_back(b);
+    ExportMesh m; m.name = "M"; m.bone_index = 1;
+    ExportSubmesh sub;
+    sub.material.shader_name = "alDefault.fx";
+    sub.material.base_texture = "ignored.tga";  // not in alDefault's spec
+    for (int i = 0; i < 36; ++i) {
+        ExportVertex v;
+        v.position = { 0, 0, 0 }; v.normal = { 0, 0, 1 }; v.uv = { 0, 0 };
+        sub.vertices.push_back(v);
+        sub.indices.push_back(static_cast<std::uint32_t>(i));
+    }
+    m.submeshes.push_back(std::move(sub));
+    s.meshes.push_back(std::move(m));
+    auto tree = build_alo(s);
+    const ChunkNode& mat = tree[1].children[2];
+    REQUIRE(mat.id == 0x10100);
+    REQUIRE(mat.children.size() == 1);             // shader name only
+    REQUIRE(mat.children[0].id == 0x10101);
+}
+
+TEST_CASE("Unknown shader falls back to Phase 4 layout (shader name + BaseTexture if any)") {
+    ExportScene s = ExportScene::with_root_bone();
+    ExportBone b; b.name = "M"; b.parent_index = 0; s.bones.push_back(b);
+    ExportMesh m; m.name = "M"; m.bone_index = 1;
+    ExportSubmesh sub;
+    sub.material.shader_name  = "SomeUnknownShader.fx";
+    sub.material.base_texture = "tex.tga";
+    for (int i = 0; i < 36; ++i) {
+        ExportVertex v;
+        v.position = { 0, 0, 0 }; v.normal = { 0, 0, 1 }; v.uv = { 0, 0 };
+        sub.vertices.push_back(v);
+        sub.indices.push_back(static_cast<std::uint32_t>(i));
+    }
+    m.submeshes.push_back(std::move(sub));
+    s.meshes.push_back(std::move(m));
+    auto tree = build_alo(s);
+    const ChunkNode& mat = tree[1].children[2];
     REQUIRE(mat.children.size() == 2);
     REQUIRE(mat.children[0].id == 0x10101);
-    REQUIRE(mat.children[1].id == 0x10105);  // TEXTURE param
+    REQUIRE(mat.children[1].id == 0x10105);
 }
 
 TEST_CASE("0x10000 geometry is a SIBLING of 0x10100 inside 0x400") {
