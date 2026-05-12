@@ -1,9 +1,45 @@
 #include "alo_export.h"
 
+#include "scene_walker.h"
+
+#include "alamo_format/alo_build.h"
+#include "alamo_format/chunk_tree.h"
+#include "alamo_format/export_scene.h"
+
 #include <Max.h>
 #include <maxapi.h>
 
+#include <cstdio>
+#include <fstream>
+#include <iterator>
+#include <string>
+
 namespace max2alamo {
+
+namespace {
+
+// Convert a Max TSTR (wide on Unicode builds) to UTF-8 -- used here for
+// error messages we hand back to Max.
+std::string to_utf8(const TCHAR* s)
+{
+    if (!s) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, s, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1) return {};
+    std::string out(static_cast<std::size_t>(len - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, s, -1, out.data(), len, nullptr, nullptr);
+    return out;
+}
+
+bool write_all(const TCHAR* path, const std::vector<std::uint8_t>& bytes)
+{
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f) return false;
+    f.write(reinterpret_cast<const char*>(bytes.data()),
+            static_cast<std::streamsize>(bytes.size()));
+    return f.good();
+}
+
+}  // namespace
 
 int AloExport::ExtCount()
 {
@@ -59,27 +95,77 @@ void AloExport::ShowAbout(HWND hWnd)
         MB_OK | MB_ICONINFORMATION);
 }
 
-int AloExport::DoExport(const TCHAR*  /*name*/,
+int AloExport::DoExport(const TCHAR*  name,
                         ExpInterface* /*ei*/,
                         Interface*    i,
                         BOOL          suppress_prompts,
                         DWORD         /*options*/)
 {
-    // Phase 3 stub: confirms the plugin loads, the menu entry is registered,
-    // and the export pipeline plumbing reaches our code. Actual scene
-    // traversal and writing arrive in Phase 4.
-    if (!suppress_prompts && i) {
-        MessageBox(
-            i->GetMAXHWnd(),
-            _T("max2alamo Phase 3 scaffold reached DoExport().\n\n")
-            _T("This stub does not yet write a file. Geometry export\n")
-            _T("lands in Phase 4."),
-            _T("max2alamo"),
-            MB_OK | MB_ICONINFORMATION);
+    HWND parent_hwnd = i ? i->GetMAXHWnd() : nullptr;
+    auto report = [&](const TCHAR* msg, UINT icon) {
+        if (!suppress_prompts) MessageBox(parent_hwnd, msg, _T("max2alamo"), MB_OK | icon);
+    };
+
+    // 1. Walk the scene.
+    alamo_format::ExportScene scene;
+    std::string walker_err;
+    if (!walk_scene(i, scene, walker_err)) {
+        std::wstring wmsg(walker_err.begin(), walker_err.end());
+        report((std::wstring(L"Scene walk failed:\n\n") + wmsg).c_str(), MB_ICONERROR);
+        return IMPEXP_FAIL;
     }
-    // Returning IMPEXP_FAIL signals a non-fatal cancel-equivalent; Max will
-    // not produce a partial output file, which is what we want for the stub.
-    return IMPEXP_FAIL;
+    if (scene.meshes.empty()) {
+        report(_T("Nothing to export: no exportable mesh nodes were found in the scene."),
+               MB_ICONWARNING);
+        return IMPEXP_FAIL;
+    }
+
+    // 2. Validate Phase 4 constraints up-front -- 16-bit face indices.
+    for (const auto& m : scene.meshes) {
+        for (const auto& s : m.submeshes) {
+            if (s.vertices.size() > 0xFFFFu) {
+                report(_T("A submesh has more than 65,535 vertices, which exceeds the ")
+                       _T("16-bit face-index limit for the current vertex chunk format. ")
+                       _T("Split the mesh or wait for vertex welding (planned for a later phase)."),
+                       MB_ICONERROR);
+                return IMPEXP_FAIL;
+            }
+        }
+    }
+
+    // 3. Serialize.
+    std::vector<std::uint8_t> bytes;
+    try {
+        auto tree = alamo_format::build_alo(scene);
+        bytes = alamo_format::write_chunk_tree(tree);
+    } catch (const std::exception& e) {
+        std::string what = e.what();
+        std::wstring wwhat(what.begin(), what.end());
+        report((std::wstring(L"Failed to build .alo bytes:\n\n") + wwhat).c_str(),
+               MB_ICONERROR);
+        return IMPEXP_FAIL;
+    }
+
+    // 4. Write to disk.
+    if (!write_all(name, bytes)) {
+        report(_T("Failed to write the output file. Check the filename and that the ")
+               _T("destination is writable."), MB_ICONERROR);
+        return IMPEXP_FAIL;
+    }
+
+    // 5. Success message.
+    if (!suppress_prompts) {
+        TCHAR msg[512];
+        _sntprintf_s(msg, _TRUNCATE,
+            _T("Export complete.\n\n")
+            _T("File: %s\n")
+            _T("Bones: %zu\n")
+            _T("Meshes: %zu\n")
+            _T("Bytes written: %zu"),
+            name, scene.bones.size(), scene.meshes.size(), bytes.size());
+        report(msg, MB_ICONINFORMATION);
+    }
+    return IMPEXP_SUCCESS;
 }
 
 }  // namespace max2alamo
