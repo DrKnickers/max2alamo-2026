@@ -239,7 +239,7 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh, alamo_format::ExportMesh& out
 }
 
 // Recursively walk an IGameNode and its children, appending exportable
-// meshes to `scene`.
+// meshes (and a per-mesh attachment bone) to `scene`.
 void walk_node(IGameNode* node, alamo_format::ExportScene& scene)
 {
     if (!node) return;
@@ -252,6 +252,17 @@ void walk_node(IGameNode* node, alamo_format::ExportScene& scene)
                 IGameMesh* gmesh = static_cast<IGameMesh*>(obj);
                 alamo_format::ExportMesh mesh;
                 if (build_mesh(node, gmesh, mesh)) {
+                    // Allocate the per-mesh attachment bone before pushing
+                    // the mesh, so the mesh's bone_index is correct.
+                    alamo_format::ExportBone bone;
+                    bone.name           = mesh.name;
+                    bone.parent_index   = 0;          // child of Root
+                    bone.visible        = true;
+                    bone.billboard_mode = 0;
+                    // Identity matrix is the default; Phase 5 will bake
+                    // the node's world transform here.
+                    mesh.bone_index     = static_cast<std::uint32_t>(scene.bones.size());
+                    scene.bones.push_back(std::move(bone));
                     scene.meshes.push_back(std::move(mesh));
                 }
             }

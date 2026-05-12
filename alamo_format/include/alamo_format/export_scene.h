@@ -54,6 +54,15 @@ struct ExportMesh {
     bool                        is_collision = false;
     std::array<float, 3>        bbox_min{0.f, 0.f, 0.f};
     std::array<float, 3>        bbox_max{0.f, 0.f, 0.f};
+
+    // Index into ExportScene::bones of the bone this mesh attaches to.
+    // Vanilla static-prop layout: every mesh has its own non-Root bone
+    // (parent = 0 = Root) named after the mesh; the 0x602 connection
+    // binds the mesh to it; per-vertex boneIdx points at it. Mike
+    // Lankamp's importer assumes this layout (it deletes the synthetic
+    // Root bone on import and then expects vertex / connection bone
+    // references to land on real bones); a 1-bone scene crashes him.
+    std::uint32_t               bone_index   = 0;
 };
 
 // Bone in the skeleton hierarchy. Phase 4 emits exactly one synthetic
