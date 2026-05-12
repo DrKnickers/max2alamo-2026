@@ -82,8 +82,31 @@ Bone data payload (`0x205` is base; `0x206` adds billboard mode):
 uint32  parentIndex     // 0 = root sentinel; importer subtracts 1
 uint32  visible         // boolean
 uint32  billboardMode   // present only if chunk ID is 0x206
-float   matrix[12]      // 4x3 column-major: cols are [c1,c5,c9], [c2,c6,c10], [c3,c7,c11], [c4,c8,c12]
+float   matrix[12]      // 4x3 transform, COLUMN-MAJOR (see below)
 ```
+
+**Bone matrix layout** (the precise bit caught us in Phase 4c — a row-major mistake produced a degenerate transform that collapsed all geometry onto the (1,1,1) diagonal):
+
+The conceptual matrix is 4 rows × 3 columns:
+```
+| r1x r1y r1z |    row 1 = X axis
+| r2x r2y r2z |    row 2 = Y axis
+| r3x r3y r3z |    row 3 = Z axis
+| tx  ty  tz  |    row 4 = translation
+```
+
+On disk: 3 columns of 4 elements, written column-by-column:
+```
+floats 0..3   = column 0 = (r1x, r2x, r3x, tx)
+floats 4..7   = column 1 = (r1y, r2y, r3y, ty)
+floats 8..11  = column 2 = (r1z, r2z, r3z, tz)
+```
+
+**Identity matrix bytes**: `1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0`.
+
+Mike's reader (`alamo2max.ms:374-378`) does the inverse: reads `c[1..12]` sequentially and builds the Max `Matrix3` via `[c[1],c[5],c[9]] [c[2],c[6],c[10]] [c[3],c[7],c[11]] [c[4],c[8],c[12]]` — i.e. row 1 takes elements 1, 5, 9 (one from each column), which only makes sense if the file stores columns first.
+
+**Vanilla static-prop convention** (Phase 4c): every mesh-bearing model has at least **two bones in the skeleton** — the synthetic `Root` (parent = 0xFFFFFFFF) plus a named non-Root bone per mesh. Mike's importer (`alamo2max.ms:653`) deletes Root after reading; vertex / connection bone references must land on real bones or his skin setup crashes Max. EaW's loader appears to share this expectation. Our writer always emits at least Root + one named bone per `ExportMesh`.
 
 Reference: `alamo2max.ms:341-385`.
 
@@ -112,13 +135,27 @@ The 128-byte fixed size was confirmed across 10,678 `0x402` chunks in the vanill
 
 ---
 
-### Submesh material + geometry (`0x10100`, container)
+### Submesh material (`0x10100`, container) — Material chunk ONLY
 
 | ID | Kind | Payload |
 |---|---|---|
 | `0x10101` | leaf | shader name (e.g. `MeshBumpColorize.fx`) |
 | `0x10102` … `0x10106` | leaf, repeated | shader parameters (mini-chunks: `1`=name, `2`=value) |
-| `0x10000` | container | geometry block |
+
+**Important (Phase 4c correction):** `0x10000` (geometry) is **a sibling of `0x10100` inside the parent `0x400`, not a child.** Vanilla layout per submesh:
+
+```
+0x400 Mesh
+  0x401 mesh name
+  0x402 mesh info
+  0x10100 material[0]      <-- shader + params only
+  0x10000 geometry[0]      <-- SIBLING of 0x10100 at this level
+  0x10100 material[1]      <-- multi-material alternates
+  0x10000 geometry[1]
+  ...
+```
+
+Mike's `ReadMaterial` (`alamo2max.ms:455-535`) walks `0x10100`'s children with `Next()` until it hits the end-of-container sentinel, then calls `Next()` again — which reads the *next sibling* `0x10000` inside the parent `0x400`. We had this nested initially and AloViewer / EaW rejected the file.
 
 Shader parameter chunk → type mapping:
 
@@ -132,16 +169,18 @@ Shader parameter chunk → type mapping:
 
 Reference: `alamo2max.ms:387-424`.
 
-Geometry block (`0x10000`):
+Geometry block (`0x10000`, container — sibling of `0x10100` inside `0x400`):
 
 | ID | Kind | Payload |
 |---|---|---|
-| `0x10001` | leaf | `uint32 vertexCount` + `uint32 faceCount` |
-| `0x10002` | leaf | vertex format identifier (skipped by importer; we'll write the matching format string) |
+| `0x10001` | leaf, **always 128 bytes** | `uint32 vertexCount` + `uint32 faceCount` + 120 reserved zero bytes |
+| `0x10002` | leaf | vertex format name as null-terminated string (e.g. `alD3dVertNU2\0`) |
 | `0x10005` *or* `0x10007` | leaf | vertex data (see vertex layouts below) |
-| `0x10004` | leaf | face data: `vertexCount` × `uint16[3]` indices |
+| `0x10004` | leaf | face data: `faceCount` × `uint16[3]` indices |
 | `0x10006` | leaf, optional | bone mapping table: `uint32[]` of length `chunk_size / 4` |
 | `0x1200` | container, optional, only on collision meshes | collision tree |
+
+**`0x10001` is fixed-size 128 bytes** (Phase 4c correction): Mike's reader only consumes the first 8 bytes (counts) and uses `Next()` to skip the rest, but AloViewer rejects shorter chunks. Same fixed-size-with-reserved-tail pattern as `0x201` and `0x402`. Confirmed across the vanilla corpus.
 
 Reference: `alamo2max.ms:455-535`.
 
@@ -455,7 +494,11 @@ For v1, **emit FoC format** by default — it's smaller, both engines support it
 | 1 | ~~RSkin and non-skinned vertex layouts: confirm byte sizes inferred from name suffixes.~~ **Resolved Phase 4b:** all formats use the same 128 / 144-byte B4I4 layout; format name selects field interpretation, not size. |
 | 2 | `0x402` mesh metadata: bbox layout (6 floats min/max vs other?). | Internal layout still TBD; container size is **resolved** (always 128 bytes; documented fields take 40 bytes, remaining 88 are reserved). Decoder confirmed via cross-check on collision meshes (`hidden=1 collision=1` only on meshes with `MeshCollision.fx`). |
 | 2b | `0x201` reserved 124 bytes: confirmed all-zero across sampled files. **Resolved.** | --- |
-| 3 | `0x10002` vertex format chunk payload: just the format string? Format flags? | Phase 1: dump and inspect. |
+| 3 | ~~`0x10002` vertex format chunk payload: just the format string? Format flags?~~ **Resolved Phase 4b:** just the null-terminated format-name string (e.g. `alD3dVertNU2\0`). Confirmed in `RV_XWING.ALO` (multiple instances dumped) and across the corpus. |
 | 4 | Format-version indicator: how does the engine distinguish EaW-style vs FoC-style `.ala` for a given file? | Phase 8: presence/absence of mini-chunks 11/12/13 in `0x1001` is the signal (per `alamo2max.ms:855-861`). |
 | 5 | Collision tree (`0x1200`-`0x1203`) internal structure. | Phase 4 / 5 if collision export is needed; not required for static rendering. |
 | 6 | What does `_ALAMO_VERTEX_TYPE` accept as values? | Confirm via Phase 4 RE of the exporter binary if Standard-material → vertex-format inference proves insufficient. |
+| 7 | ~~Bone matrix on-disk byte order.~~ **Resolved Phase 4c:** 3 columns of 4 elements stored column-major (NOT row-major). Identity = `1,0,0,0, 0,1,0,0, 0,0,1,0`. Row-major mistake produces a degenerate transform that collapses all geometry. |
+| 8 | ~~`0x10100` and `0x10000` nested?~~ **Resolved Phase 4c:** they are SIBLINGS inside `0x400`, alternating per submesh (`0x10100` material then `0x10000` geometry). NOT nested. |
+| 9 | ~~`0x10001` size~~ **Resolved Phase 4c:** fixed-size 128 bytes (8 used + 120 reserved zeros). Same pattern as `0x201` / `0x402`. |
+| 10 | ~~Minimum skeleton size for static props.~~ **Resolved Phase 4c:** vanilla static-prop models always have **Root + at least one named non-Root bone per mesh**. Mike's importer crashes on Root-only skeletons (deletes Root, then dangles on vertex bone references); EaW appears to share this expectation. |

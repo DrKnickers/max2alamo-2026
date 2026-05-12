@@ -27,8 +27,8 @@ Single-file project status + history. Open this first when picking up a new sess
 | 1 | Format library reader + `alo_dump` | ✅ shipped | 2066 / 2066 vanilla `.alo` files parse cleanly |
 | 2 | Format library writer + `alo_roundtrip` | ✅ shipped | 4929 / 4929 vanilla `.alo` + `.ala` files round-trip byte-identical |
 | 3 | Max 2026 plugin scaffold | ✅ shipped | Plugin loads in Max; "Alamo Object" appears in Export menu |
-| 4 | Static geometry export | ⏭ next | Textured cube exported from Max renders in EaW |
-| 5 | Skeleton + skinning | pending | 4-bone-weighted skinned mesh round-trips through Mike's importer |
+| 4 | Static geometry export | ✅ shipped | Textured cube exports from Max, imports cleanly into Mike's importer, and renders in AloViewer |
+| 5 | Skeleton + skinning | ⏭ next | 4-bone-weighted skinned mesh round-trips through Mike's importer |
 | 6 | Materials + shader parameters | pending | Top 5 Petroglyph shaders export with correct params |
 | 7 | Lights, hardpoints, proxies | pending | Fighter exports with working hardpoints in EaW |
 | 8 | Animation export incl. visibility tracks | pending | Walk cycle + animated visibility play correctly in-game |
@@ -152,35 +152,48 @@ The actual `.dle`. Commit: [d119b52](https://github.com/DrKnickers/max2alamo-202
 
 Verified in-Max by user: plugin loads, "Alamo Object (*.ALO)" appears in File → Export, Phase 3 dialog displays correctly when invoked.
 
+### Phase 4 — Static geometry export (shipped)
+
+The first phase where the plugin actually writes real `.alo` files from a Max scene. Shipped in three sub-PRs that each had their own scope:
+
+- **4a** ([PR #14](https://github.com/DrKnickers/max2alamo-2026/pull/14)) — `ExportScene` POD struct family (`ExportVertex` / `ExportMaterial` / `ExportSubmesh` / `ExportMesh` / `ExportBone` / `ExportScene`) in the format library, plus the IGame-based `scene_walker` in `max2alamo/` that populates it. The airlock between Max and the format library.
+- **4b** ([PR #15](https://github.com/DrKnickers/max2alamo-2026/pull/15)) — `build_alo(ExportScene) -> std::vector<ChunkNode>` serializer. Host-agnostic, unit-tested.
+- **4c** ([PR #16](https://github.com/DrKnickers/max2alamo-2026/pull/16)) — `DoExport` wired through the pipeline; material extraction (Standard + DirectX Shader); `Alamo_Shader_Name` node user-property override; `.export.log` diagnostic written next to every export. Plus three corrective fixes discovered during real-world testing — see below.
+
+Format-spec discoveries made during the work (all flow to [`format-notes.md`](format-notes.md)):
+
+- **All vertex chunks on disk use 128 or 144 bytes per vertex regardless of the format-name string in `0x10002`.** The format name (`alD3dVertNU2`, `alD3dVertN`, etc.) selects which fields the engine reads; the on-disk size is always the full B4I4 layout. Confirmed across 9000+ vanilla submeshes (corpus survey). Our writer always emits `0x10007` (144 B/vertex) with neutral defaults in unused slots.
+- **`0x10000` (geometry) is a SIBLING of `0x10100` (material) inside `0x400`, not nested.** Vanilla layout alternates `material[0]` / `geometry[0]` / `material[1]` / `geometry[1]` / … at the parent level. AloViewer rejected the file until this was fixed.
+- **`0x10001` is a fixed-size 128-byte chunk** (8 bytes used: vertexCount + faceCount; 120 bytes reserved zeros). Same pattern as `0x201` / `0x402`.
+- **Bone matrix is 4 rows × 3 columns stored column-major** (NOT row-major). Identity = `1,0,0,0, 0,1,0,0, 0,0,1,0`. The row-major mistake produced a degenerate transform that collapsed all geometry onto the (1,1,1) diagonal — exactly the "wedge" shape that appeared in Max 9 imports. This was the final structural bug, and fixing it unblocked AloViewer rendering, Mike's importer geometry, and (presumably) EaW in-game rendering.
+- **Vanilla static-prop convention**: skeletons always have at least Root + one named non-Root bone per mesh. Mike's importer deletes Root after reading; vertex / connection bone references must land on real bones or his skin setup crashes. Our walker now emits a per-mesh attachment bone for each exported mesh.
+
+A diagnostic that paid for itself many times over: every export drops a `<file>.export.log` next to the `.alo` listing every material's class, all texture maps (slot ID + filename), and the final shader / texture chosen. Surfaced both real bugs (texture-from-wrong-slot turning out to be a Max workflow issue, not ours) and confirmed correct behaviour when there *was* none.
+
+Workflow learning: Max 2026 cannot compile EaW's DX9-era `.fx` shaders via its DirectX Shader material — they're 19-year-old HLSL that the modern compiler rejects. Added the `Alamo_Shader_Name` node user property as an explicit shader-name override, fitting the existing legacy `Alamo_*` user-property convention. Standard material on the mesh + this property gives full control without needing Max's effect compilation to work at all.
+
+Acceptance verified by user: cube imports correctly in Mike's importer (no crash, real 3D geometry), renders correctly in AloViewer. EaW in-game test deferred to user discretion.
+
 ---
 
 ## Future phase plans
 
-### Phase 4 — Static geometry export (next)
+### Phase 5 — Skeleton + skinning (next)
 
-Make the plugin actually write a real `.alo` from a Max scene's static meshes.
+Real bones — replace Phase 4's per-mesh synthetic attachment bones with the actual Max hierarchy. Pre-staged work: Phase 4 already established the per-mesh bone convention; Phase 5 puts a real skeleton + multi-bone vertex weights in place of the single-bone-per-vertex Phase 4 default.
 
 Rough scope:
-- IGame traversal (`IGameScene` → `IGameNode` → `IGameMesh`). Material count + per-material vertex/index buffers.
-- Geometry → `ChunkNode` tree using the `alamo_format` writer. Chunks: `0x200` skeleton (placeholder root only for now), `0x400` mesh, `0x402` mesh metadata, `0x10100` material container, `0x10001` sizes, `0x10002` vertex format, `0x10004` faces, `0x10005` or `0x10007` vertices.
-- For Phase 4 use `alD3dVertNU2` (pos + normal + UV, no skin, no tangents) to keep the surface narrow. Tangent / bumpy formats arrive in Phase 6.
-- Default-shader assignment: `alDefault.fx` or `MeshBumpColorize.fx` with one diffuse texture from the Max material's diffuse map slot.
-- Bounding box in `0x402`.
+- Bone discovery (Max bones / Biped / dummies tagged `Alamo_Export_Transform` user property). Build the hierarchy in `ExportScene.bones` with real parent indices.
+- Bake each bone's Max world transform into the column-major `matrix` (Phase 4 left this as identity).
+- Skin-modifier extraction: per-vertex up to 4 (boneIdx, weight) tuples. Layout in the existing 144-byte vertex chunk: boneIdx in offsets 112..128, weights in 128..144 (we already write `[bone_index, 0, 0, 0]` / `[1, 0, 0, 0]` for the single-bone Phase 4 case; multi-bone fills slots 1..3 with real data).
+- `Alamo_Billboard_Mode` user prop → emit `0x206` (with billboard) instead of `0x205` (we already always emit `0x206` with billboard=0; just need to read the prop).
+- Connections section update: mesh attaches to whichever bone holds it in Max's hierarchy, not to the synthetic per-mesh bone.
 
-Acceptance: a textured cube exported from Max loads in [AloViewer](https://modtools.petrolution.net/tools/AloViewer) and renders correctly in EaW.
+Acceptance: a 4-bone-weighted skinned mesh exported from Max imports correctly via Mike Lankamp's importer (deformations match in-Max preview); animated turret on a fighter rotates correctly in-game in EaW.
 
-Where Phase 4 will likely need design iteration:
-- Scene-walk strategy (which Max nodes count as exportable meshes — respect `Alamo_Export_Geometry` user prop).
-- Coordinate-system handling (working assumption: identity for vertex data, UV V flipped to `1 - v`; verify against an imported-then-re-exported vanilla model).
-- Material → shader inference for Standard materials (vs explicit DirectX Shader material).
-
-### Phase 5 — Skeleton + skinning
-
-Bone discovery (Max bones / Biped / dummies tagged `Alamo_Export_Transform`), hierarchy export (`0x202` containers with `0x203` name + `0x205` or `0x206` data), Skin modifier extraction. **Up to 4 bone influences per vertex** (B4I4 layout); Phase 0.5 RE work pinned this down.
-
-`Alamo_Billboard_Mode` user prop → emit `0x206` (with billboard) instead of `0x205`. Connections section (`0x602`) for object → bone attachment.
-
-Acceptance: a 4-bone-weighted skinned mesh exported from Max imports correctly via Mike Lankamp's importer (deformations match in-Max preview).
+Likely Phase 5 risks:
+- Vertex-to-bone mapping: our current scheme assumes each mesh has one bone. Real skinning has 4 bones per vertex with varying weights — easy to introduce off-by-one errors in the boneIdx mapping. Mitigation: round-trip a Mike-imported vanilla rigged model (e.g. an X-wing's S-foils or a stormtrooper) — same correctness oracle pattern Phase 1/2 used.
+- Coordinate frame: Phase 4's identity transforms aren't a stress test. Real Max hierarchies have non-trivial parent-child relationships, rotation, scale. Verify with an asymmetric multi-bone test scene.
 
 ### Phase 6 — Materials + shader parameters
 
@@ -212,9 +225,8 @@ Export options dialog (frame range, format-version flag, log path), structured w
 
 ## Open format questions
 
-Tracked at the bottom of [`docs/format-notes.md`](format-notes.md). Currently:
-- Exact byte layouts of `RSkin*` and non-skinned vertex formats (verify Phase 4 by dividing vertex chunk size by `vertexCount`).
-- `0x402` bbox layout (6 floats min/max vs other?).
+Tracked at the bottom of [`docs/format-notes.md`](format-notes.md). Most Phase 4-relevant questions are now resolved; remaining:
+- `0x402` bbox layout (6 floats min/max vs other?). Cosmetic; doesn't block rendering.
 - `0x10002` vertex-format chunk payload contents.
 - Collision tree (`0x1200`-`0x1203`) internal structure (only blocks Phase 5+ if collision export is required).
 
