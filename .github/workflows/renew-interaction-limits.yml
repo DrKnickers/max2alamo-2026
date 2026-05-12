@@ -1,0 +1,63 @@
+name: Renew interaction limits
+
+# GitHub repo interaction limits cap out at six months and then silently
+# expire, after which non-collaborators can open issues and PRs again.
+# This workflow PUTs the limit back to "collaborators_only" on a monthly
+# schedule, well within the 6-month TTL, so the lockdown never lapses.
+#
+# REQUIRED ONE-TIME SETUP:
+#   The default GITHUB_TOKEN does not have administration:write scope, so
+#   this workflow needs a separate Personal Access Token.
+#
+#   1. Create a fine-grained PAT at https://github.com/settings/tokens?type=beta
+#      - Resource owner: your account
+#      - Repository access: Only select repositories -> max2alamo-2026
+#      - Repository permissions:
+#          Administration: Read and write
+#      - Expiration: 1 year (maximum). You'll get a renewal reminder
+#        before it expires.
+#   2. Add it as a repo secret named INTERACTION_LIMITS_TOKEN at
+#      https://github.com/DrKnickers/max2alamo-2026/settings/secrets/actions
+#   3. Trigger this workflow once manually from the Actions tab to
+#      verify it works (or wait for the next scheduled run).
+#
+# If the secret is not set, the workflow exits with a clear error and
+# the limit will simply expire on its scheduled date -- the renewal is
+# fail-safe in the sense that nothing else breaks.
+
+on:
+  schedule:
+    # 12:00 UTC on the 1st of every month. Six-month TTL means we have
+    # six attempts before the limit could lapse; monthly cadence is
+    # belt-and-suspenders.
+    - cron: '0 12 1 * *'
+  workflow_dispatch:
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    permissions: {}   # explicitly drop GITHUB_TOKEN permissions; we use a PAT
+    steps:
+      - name: Renew collaborators-only interaction limit
+        env:
+          GH_TOKEN: ${{ secrets.INTERACTION_LIMITS_TOKEN }}
+        run: |
+          set -eu
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::Secret INTERACTION_LIMITS_TOKEN is not set."
+            echo "::error::See the comment block at the top of this workflow file"
+            echo "::error::for the one-time PAT setup instructions."
+            exit 1
+          fi
+
+          echo "Before:"
+          gh api repos/${{ github.repository }}/interaction-limits || echo "(none set)"
+          echo ""
+
+          gh api -X PUT \
+            repos/${{ github.repository }}/interaction-limits \
+            -f limit=collaborators_only \
+            -f expiry=six_months > /dev/null
+
+          echo "After:"
+          gh api repos/${{ github.repository }}/interaction-limits
