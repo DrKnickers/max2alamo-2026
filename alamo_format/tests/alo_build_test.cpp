@@ -31,12 +31,16 @@ ExportScene minimal_cube_scene()
     ExportSubmesh sub;
     sub.material.shader_name  = "MeshAlpha.fx";
     sub.material.base_texture = "tex_cube.tga";
-    // 12 faces (cube), 3 verts per face = 36 vertices
+    // 12 faces (cube), 3 verts per face = 36 vertices.
+    // Per-vertex bone binding for a static prop: every vertex rigidly
+    // attached to the per-mesh attachment bone (index 1) with weight 1.
     for (int i = 0; i < 36; ++i) {
         ExportVertex v;
         v.position = { float(i % 3 - 1), float((i / 3) % 3 - 1), 0.f };
         v.normal   = { 0.f, 0.f, 1.f };
         v.uv       = { 0.5f, 0.5f };
+        v.bone_indices = { mesh.bone_index, 0u, 0u, 0u };
+        v.weights      = { 1.f, 0.f, 0.f, 0.f };
         sub.vertices.push_back(v);
         sub.indices.push_back(static_cast<std::uint32_t>(i));
     }

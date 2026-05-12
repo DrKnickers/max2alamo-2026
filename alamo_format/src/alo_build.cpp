@@ -182,17 +182,12 @@ ChunkNode build_float4_param(const std::string& param_name,
     return make_leaf(0x10106, std::move(p));
 }
 
-// One 144-byte vertex in the B4I4 rev-2 layout. Phase 4 fills pos / normal
-// / uv0 / tangent / binormal from the source mesh; the rest get neutral
-// defaults (zero UVs, white color, alpha=1, bound to `bone_index` with
-// weight 1). Phase 6b: tangent + binormal are now populated by the walker
-// (previously zero, which broke bump-mapped shaders at runtime).
-//
-// `bone_index` is the file-side bone index (same scheme used by the
-// 0x602 connection chunk minus 1). For Phase 4 every vertex of a given
-// mesh shares the same bone -- no real skinning yet.
-void append_vertex(std::vector<std::uint8_t>& out, const ExportVertex& v,
-                   std::uint32_t bone_index)
+// One 144-byte vertex in the B4I4 rev-2 layout. Phase 4 filled pos /
+// normal / uv0 from the source mesh; Phase 6b added tangent + binormal;
+// Phase 5b now reads bone indices + weights per-vertex from
+// ExportVertex itself (previously a submesh-wide parameter). Other
+// slots get neutral defaults (uv1..3 zeros, white color, alpha=1).
+void append_vertex(std::vector<std::uint8_t>& out, const ExportVertex& v)
 {
     // pos (12)
     append_f32(out, v.position[0]);
@@ -223,24 +218,26 @@ void append_vertex(std::vector<std::uint8_t>& out, const ExportVertex& v,
     append_f32(out, 1.0f);
     // unused 16 (rev 2)
     append_zeros(out, 16);
-    // boneIdx[4] (16) -- bone_index in slot 0, then padding zeros.
-    // Slot 0 carries the only meaningful bone for Phase 4; multi-bone
-    // skinning fills slots 1..3 in Phase 5.
-    append_u32(out, bone_index);
-    for (int i = 1; i < 4; ++i) append_u32(out, 0u);
-    // weight[4] (16) -- [1, 0, 0, 0]
-    append_f32(out, 1.0f);
-    append_f32(out, 0.0f);
-    append_f32(out, 0.0f);
-    append_f32(out, 0.0f);
+    // boneIdx[4] (16). Phase 5b: per-vertex slot 0 = dominant bone for
+    // skinned meshes; for static/rigid meshes the walker fills all four
+    // verts with the same per-mesh bone index. Slots 1..3 are unused
+    // pending Phase 5c (multi-bone weighted skinning).
+    append_u32(out, v.bone_indices[0]);
+    append_u32(out, v.bone_indices[1]);
+    append_u32(out, v.bone_indices[2]);
+    append_u32(out, v.bone_indices[3]);
+    // weight[4] (16)
+    append_f32(out, v.weights[0]);
+    append_f32(out, v.weights[1]);
+    append_f32(out, v.weights[2]);
+    append_f32(out, v.weights[3]);
 }
 
-ChunkNode build_vertex_chunk(const std::vector<ExportVertex>& verts,
-                             std::uint32_t bone_index)
+ChunkNode build_vertex_chunk(const std::vector<ExportVertex>& verts)
 {
     std::vector<std::uint8_t> p;
     p.reserve(verts.size() * kBytesPerVertex);
-    for (const auto& v : verts) append_vertex(p, v, bone_index);
+    for (const auto& v : verts) append_vertex(p, v);
     return make_leaf(kVertexChunkId, std::move(p));
 }
 
@@ -345,9 +342,10 @@ ChunkNode build_submesh_material(const ExportSubmesh& sub) {
 }
 
 // 0x10000 (Submesh data): sizes + format + vertices + faces. Sibling of
-// 0x10100 above. `bone_index` is the file-side bone index that every
-// vertex's boneIdx[0] will point at.
-ChunkNode build_submesh_geometry(const ExportSubmesh& sub, std::uint32_t bone_index)
+// 0x10100 above. Each vertex carries its own bone bindings (Phase 5b);
+// the walker fills them in for both static (rigid attachment to per-mesh
+// bone) and skinned (dominant bone per vertex) cases.
+ChunkNode build_submesh_geometry(const ExportSubmesh& sub)
 {
     std::vector<ChunkNode> kids;
 
@@ -372,7 +370,7 @@ ChunkNode build_submesh_geometry(const ExportSubmesh& sub, std::uint32_t bone_in
     }
 
     // 0x10007: vertex data (144 B/vertex).
-    kids.push_back(build_vertex_chunk(sub.vertices, bone_index));
+    kids.push_back(build_vertex_chunk(sub.vertices));
 
     // 0x10004: face indices (3 x uint16 per triangle).
     kids.push_back(build_face_chunk(sub.indices));
@@ -394,7 +392,7 @@ ChunkNode build_mesh(const ExportMesh& mesh) {
     // SIBLINGS at this level, alternating per submesh. NOT nested.
     for (const auto& sub : mesh.submeshes) {
         kids.push_back(build_submesh_material(sub));
-        kids.push_back(build_submesh_geometry(sub, mesh.bone_index));
+        kids.push_back(build_submesh_geometry(sub));
     }
     return make_container(0x400, std::move(kids));
 }
