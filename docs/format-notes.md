@@ -149,6 +149,27 @@ Reference: `alamo2max.ms:455-535`.
 
 ## Vertex layouts — RESOLVED
 
+**Critical finding from corpus survey (Phase 4b):** every single vertex chunk in the vanilla EaW + FoC corpus uses one of **two physical sizes — 128 bytes per vertex (chunk `0x10005`, "rev 1") or 144 bytes per vertex (chunk `0x10007`, "rev 2") — regardless of the format name in `0x10002`.** The format name selects which fields the engine *uses*; the on-disk size is always the full B4I4 layout. Confirmed across 9000+ submeshes (`re/scripts/survey-vertex-formats.ps1`).
+
+What this means for our writer:
+- Always emit `0x10007` (rev 2 dominates: ~99% of vanilla submeshes).
+- Always write 144 bytes per vertex in B4I4 layout.
+- Fill the fields named by the chosen format name with real data; fill the rest with neutral defaults (zero UVs / tangent / binormal, white color, alpha=1, bone index 0, weight 1).
+- The format-name string in `0x10002` is what tells EaW which slots to interpret — *not* the vertex chunk size.
+
+Shader / format pairings observed in vanilla content (top hits):
+
+| Shader | Vertex format | Occurrences |
+|---|---|---|
+| `alDefault.fx` | `alD3dVertNU2` | 1980 |
+| `MeshBumpColorize.fx` | `alD3dVertNU2U3U3` | 1855 |
+| `MeshAlpha.fx` | `alD3dVertNU2` | 1356 |
+| `MeshShadowVolume.fx` | `alD3dVertN` | 1402 |
+| `MeshAdditive.fx` | `alD3dVertNU2` | 1079 |
+| `MeshCollision.fx` | `alD3dVertN` | 852 |
+
+Our Phase 4 default (`MeshAlpha.fx` + `alD3dVertNU2`) is well-attested.
+
 The exporter binary contains **15 named vertex format strings** (extracted from `max2alamo.dle` strings table):
 
 | Format | Skin | Layout summary |
@@ -200,14 +221,11 @@ Same as revision 1, but with **16 extra bytes of unused data** between `alpha` a
 
 V is flipped on read (`uv.v = 1 - reader.GetFloat()` at `alamo2max.ms:431`), so we **write** `v -> 1 - v` likewise.
 
-### RSkin and non-skinned vertex layouts
+### RSkin and non-skinned vertex layouts -- RESOLVED
 
-These are NOT covered by the MAXScript reader (it only handles the skinned chunks). Phase 4 (static geometry) will need to either:
+**They don't have separate physical layouts.** Per the corpus survey above, every vertex chunk uses the 128 / 144 byte B4I4 shape regardless of format name. The previously inferred sizes per name suffix were a red herring. Disregard the table below -- kept for historical reference of what we initially assumed.
 
-1. RE the exporter binary's vertex-write functions (we have the binary loaded in Ghidra; write a Java post-script in Phase 4 if needed), OR
-2. Infer from the `alD3dVert*` name pattern: each suffix letter encodes a section (`N`=normal, `U2`=UV pair, `U3`=tangent, `C`=color, etc.) — pack accordingly.
-
-Option 2 is the cheap path. Inferred layouts:
+~~Inferred layouts (now disproven):~~
 
 ```
 alD3dVertN              : pos + normal                                                           = 24 bytes
@@ -434,7 +452,7 @@ For v1, **emit FoC format** by default — it's smaller, both engines support it
 
 | # | Question | Resolution path |
 |---|---|---|
-| 1 | RSkin and non-skinned vertex layouts: confirm byte sizes inferred from name suffixes. | Phase 1: `alo_dump` on vanilla `.alo` files; for each `0x10100`, divide vertex chunk size by `vertexCount` to get bytes-per-vertex; cross-check against the table in this doc. |
+| 1 | ~~RSkin and non-skinned vertex layouts: confirm byte sizes inferred from name suffixes.~~ **Resolved Phase 4b:** all formats use the same 128 / 144-byte B4I4 layout; format name selects field interpretation, not size. |
 | 2 | `0x402` mesh metadata: bbox layout (6 floats min/max vs other?). | Internal layout still TBD; container size is **resolved** (always 128 bytes; documented fields take 40 bytes, remaining 88 are reserved). Decoder confirmed via cross-check on collision meshes (`hidden=1 collision=1` only on meshes with `MeshCollision.fx`). |
 | 2b | `0x201` reserved 124 bytes: confirmed all-zero across sampled files. **Resolved.** | --- |
 | 3 | `0x10002` vertex format chunk payload: just the format string? Format flags? | Phase 1: dump and inspect. |

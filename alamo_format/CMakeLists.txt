@@ -5,6 +5,7 @@ add_library(alamo_format STATIC
     src/alo_reader.cpp
     src/ala_writer.cpp
     src/ala_reader.cpp
+    src/alo_build.cpp
 )
 
 target_include_directories(alamo_format PUBLIC include)
