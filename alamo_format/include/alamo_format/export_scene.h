@@ -38,13 +38,36 @@ struct ExportVertex {
     std::array<float, 3> binormal{0.f, 0.f, 0.f};
 };
 
-// Material assignment for a submesh. Phase 4 ships `shader_name` and
-// `base_texture` only; typed shader parameters (Emissive, Diffuse,
-// Specular, etc.) arrive in Phase 6 alongside the data-driven
-// shader_table.h.
+// One named parameter on a material. The kind drives both the on-disk
+// chunk ID and which `value*` slot carries the data. Per vanilla
+// convention every scalar / vector param is always emitted (even at its
+// default value); texture params are emitted only when the filename is
+// non-empty.
+//
+// Vanilla content uses 4-element vectors even for parameters that PG
+// declared as `float3` in the .fxh (Emissive, Diffuse, Specular, etc.) --
+// the 4th element is just zero. We follow that convention: kind=Float4
+// covers both float3 and float4 declarations.
+struct MaterialParam {
+    enum class Kind : std::uint8_t { Float, Float4, Texture };
+    std::string             name;
+    Kind                    kind = Kind::Float4;
+    std::array<float, 4>    value4{0.f, 0.f, 0.f, 0.f};   // Float / Float4
+    std::string             texture;                       // Texture only (basename)
+};
+
+// Material assignment for a submesh. Phase 4 shipped `shader_name` and
+// `base_texture` only. Phase 6c populates `params` with the typed
+// per-material parameter values (Emissive, Diffuse, Specular, ...) that
+// the runtime shader reads instead of falling back to compile-time
+// defaults. The order in `params` matches what vanilla content writes
+// for the same shader (driven by alamo_format::shader_table::params_for).
 struct ExportMaterial {
-    std::string shader_name;    // e.g. "MeshAlpha.fx"
-    std::string base_texture;   // e.g. "tex_box.tga"; empty for no texture
+    std::string                shader_name;    // e.g. "MeshAlpha.fx"
+    std::string                base_texture;   // back-compat shortcut for the
+                                               // BaseTexture entry; mirrored
+                                               // into `params` at build time.
+    std::vector<MaterialParam> params;
 };
 
 // One material slice of a mesh. A multi-material Max object becomes one
