@@ -28,13 +28,21 @@ Single-file project status + history. Open this first when picking up a new sess
 | 2 | Format library writer + `alo_roundtrip` | ✅ shipped | 4929 / 4929 vanilla `.alo` + `.ala` files round-trip byte-identical |
 | 3 | Max 2026 plugin scaffold | ✅ shipped | Plugin loads in Max; "Alamo Object" appears in Export menu |
 | 4 | Static geometry export | ✅ shipped | Textured cube exports from Max, imports cleanly into Mike's importer, and renders in AloViewer |
-| 5 | Skeleton + skinning | ⏭ next | 4-bone-weighted skinned mesh round-trips through Mike's importer |
-| 6 | Materials + shader parameters | pending | Top 5 Petroglyph shaders export with correct params |
+| 4c-fix | Bone WorldTM bake | ✅ shipped | [PR #17](https://github.com/DrKnickers/max2alamo-2026/pull/17) — multi-mesh scenes export at their authored positions (no longer collapsed to origin) |
+| 5a | Real bone hierarchy + local matrices | ✅ shipped | [PR #24](https://github.com/DrKnickers/max2alamo-2026/pull/24) — `IGAME_BONE` walk with `GetLocalTM`; verified by `test_bone_hierarchy.ms` |
+| 5b | Single-bone skinning via IGameSkin | ✅ shipped | [PR #25](https://github.com/DrKnickers/max2alamo-2026/pull/25) — skinned cylinder exports with per-vertex dominant-bone refs; connects to Root |
+| 5c | Multi-bone weighted skinning | ⏭ next | 4-bone-weighted smooth-skinned mesh round-trips through Mike's importer |
+| 5d | `Alamo_*` user-property family (Billboard_Mode, etc.) | pending | Property-driven mesh attributes survive export |
+| 6a | Effects11 shader stubs for Max 2026 | ✅ shipped | [PR #18](https://github.com/DrKnickers/max2alamo-2026/pull/18) — all 39 PG shaders load in Max 2026's DXSM with PG parameter UIs |
+| 6b | Per-vertex tangent + binormal export | ✅ shipped | [PR #19](https://github.com/DrKnickers/max2alamo-2026/pull/19) — MikkT via `IGameMesh::GetFaceVertexTangentBinormal`; bump shading works |
+| 6c | Per-material parameter export | ✅ shipped | [PR #20](https://github.com/DrKnickers/max2alamo-2026/pull/20) + [#22](https://github.com/DrKnickers/max2alamo-2026/pull/22) — DXMaterial ParamBlock → typed `0x10103/6` chunks; float3 alpha=0 convention |
+| 6d | Coord-frame banner in `.export.log` | ✅ shipped | [PR #21](https://github.com/DrKnickers/max2alamo-2026/pull/21) — every export documents `Z up, -Y forward, +X right` |
+| Test harness | Max-side regression suite | ✅ shipped | [PR #23](https://github.com/DrKnickers/max2alamo-2026/pull/23) + [#26](https://github.com/DrKnickers/max2alamo-2026/pull/26) — `scripts/run-max-tests.ps1` runs 6 end-to-end tests via `3dsmaxbatch` |
 | 7 | Lights, hardpoints, proxies | pending | Fighter exports with working hardpoints in EaW |
 | 8 | Animation export incl. visibility tracks | pending | Walk cycle + animated visibility play correctly in-game |
 | 9 | Polish + v1 release | pending | v1.0 tag with `.dle` published via GitHub Releases |
 
-Each phase has a corresponding GitHub issue (`#1` for Phase 0.5 through `#10` for Phase 9). Closed issues = shipped phases.
+Each main phase has a corresponding GitHub issue (`#1` for Phase 0.5 through `#10` for Phase 9). Sub-phases (4c-fix, 5a/5b, 6a-d, test harness) shipped as standalone PRs without dedicated issues.
 
 ---
 
@@ -69,12 +77,16 @@ Wiki / Discussions / Projects are disabled.
 
 | Thing | Path |
 |---|---|
-| Format library headers | `alamo_format/include/alamo_format/` |
+| Format library headers | `alamo_format/include/alamo_format/` (incl. `shader_table.h` for per-shader param specs) |
 | Format library sources | `alamo_format/src/` |
 | Format library tests | `alamo_format/tests/` (Catch2 v3 via FetchContent) |
-| Standalone CLIs | `tools/alo_dump/`, `tools/alo_roundtrip/` |
+| Standalone CLIs | `tools/alo_dump/`, `tools/alo_roundtrip/`, `tools/alo_synth/` (synth `.alo` from a hard-coded `ExportScene`) |
 | Max plugin sources | `max2alamo/src/` |
 | Max plugin resources | `max2alamo/resources/` (.def, .rc) |
+| Max-side test harness | `tests/maxscript/test_*.ms` scenes + `tests/maxscript/verify/verify_test_*.py` assertions + `tests/maxscript/verify/_alo.py` parser library |
+| Max-side test runner | `scripts/run-max-tests.ps1` (dispatches `3dsmaxbatch.exe` per test, runs paired Python verifier) |
+| Effects11 shader stubs | `shaders/max-preview/*.fx` (39 files, regenerated from a manifest by `scripts/generate-max-preview-stubs.py`) |
+| Tangent diagnostic tools | `scripts/compare-tangents.py` / `scripts/dump-tangents.py` (one-shot research scripts used to settle the MikkT vs vanilla decision) |
 | Format spec (working ref) | `docs/format-notes.md` |
 | Build instructions | `docs/build.md` |
 | Corpus extraction guide | `docs/corpus.md` |
@@ -174,34 +186,185 @@ Workflow learning: Max 2026 cannot compile EaW's DX9-era `.fx` shaders via its D
 
 Acceptance verified by user: cube imports correctly in Mike's importer (no crash, real 3D geometry), renders correctly in AloViewer. EaW in-game test deferred to user discretion.
 
+### Phase 4c-fix — Bone WorldTM bake ([PR #17](https://github.com/DrKnickers/max2alamo-2026/pull/17), shipped)
+
+First real-content user test surfaced a bug Phase 4c had punted: the per-mesh attachment bone matrix was hardcoded to identity (with a comment that the WorldTM bake was "Phase 5 work"). Combined with vertex positions in object space, every mesh in a multi-mesh scene rendered stacked at the world origin — Box at (10,0,5) and Sphere at (-15,20,5) in Max both came out at (0,0,0) in AloViewer.
+
+Fix: bake `IGameNode::GetWorldTM().ExtractMatrix3()` into the bone's 12-float column-major matrix at bone-allocation time. The encoding helper got extracted as `encode_matrix3` so Phase 5a's local-TM path could reuse it. Default-pivot meshes only; full `ObjectTM` handling for pivot-offset meshes deferred to Phase 5.
+
+### Phase 6a — Effects11 shader stubs ([PR #18](https://github.com/DrKnickers/max2alamo-2026/pull/18), shipped)
+
+Max 2026's DirectX Shader material runtime rejects every PG stock `.fx` file because they use the DX9 `fx_2_0` effect framework (inline render states, `VertexShader = (compiled_var)` assignment style). Max 2026 wants Effects11 (`technique11`, state objects, `SetVertexShader(CompileShader(vs_5_0, ...))`). This is **framework-level, not patchable** — `fxc` accepts the patched DX9 effects but Max still rejects them at runtime.
+
+Without stubs, the canonical Petroglyph authoring workflow ("Material Editor → DirectX Shader → load `MeshBumpColorize.fx` → param rollout appears → wire textures → preview → export") breaks at "load." This PR adds same-named Effects11 stubs that:
+- have the same parameter names, types, and `UIName` annotations as the PG shaders
+- render simplified Blinn/Lambert in the Max viewport (visual fidelity is *not* the goal — UI fidelity is)
+- exist purely Max-side; the exported `.alo` references only the shader filename, and EaW resolves it against its own `Data/Art/Shaders/` at runtime
+
+All 39 PG shaders from `corruption/Mods/Empire-at-War-Source-Files/src/FOC/Data/Art/Shaders/` are covered. The set is regenerated from a manifest in [`scripts/generate-max-preview-stubs.py`](../scripts/generate-max-preview-stubs.py); new shaders are added by appending one manifest entry. Source of truth for params: Gaukler's `material_parameter_dict` merged with PG's `.fxh` headers. See [`shaders/max-preview/README.md`](../shaders/max-preview/README.md).
+
+`alDefault.fx` was the validation target — full round-trip (load in Max → apply to cube → export → AloViewer rendering correctly with `Material: alDefault.fx`) confirmed the Effects11 dialect was right before the other 38 were generated.
+
+### Phase 6b — Per-vertex tangent + binormal export ([PR #19](https://github.com/DrKnickers/max2alamo-2026/pull/19), shipped)
+
+PG's bump-mapped shaders (`MeshBumpColorize`, `RSkinBumpColorize`, `MeshBumpReflectColorize`, `RSkinBumpReflectColorize`, `Tree`, `TerrainMeshBump`, `Planet`) do per-pixel lighting in tangent space. The VS reads `In.Tangent` / `In.Binormal` from the vertex record, builds a world-to-tangent matrix, and transforms the light + half-angle vectors into that frame for the PS. Phase 4 left those vertex fields at zero — producing a degenerate tangent matrix and a distinctive half-textured / half-white rendering artifact that surfaced during Phase 6a validation.
+
+This populates them per face-corner via `IGameMesh::GetFaceVertexTangentBinormal(face, corner)` — the documented shared index into IGame's tangent + binormal arrays. The first iteration reused `face->texCoord[corner]` which produced wrong-face tangents on UV-shared geometry (cubes); the dump diagnostic surfaced this immediately (`|dot(T, N)| = 0.39` — not perpendicular).
+
+**Why MikkT specifically:** empirical comparison across ~22k vertices in 11 vanilla `.alo` files showed vanilla PG content is **not** internally consistent — different submeshes were authored against different tangent algorithms (median per-vertex angle vs Lengyel/MikkT-style ranges from 0.5° to >90° depending on the source mesh). There is no single "vanilla algorithm" to match. MikkTSpace (Max 2026 default; what Substance Painter, Blender's normal-map bake, Marmoset, and Max's own bake since 2014 use) is the modern standard. The diagnostic scripts [`scripts/compare-tangents.py`](../scripts/compare-tangents.py) and [`scripts/dump-tangents.py`](../scripts/dump-tangents.py) settled this empirically.
+
+### Phase 6c — Per-material parameter export ([PR #20](https://github.com/DrKnickers/max2alamo-2026/pull/20) + [PR #22](https://github.com/DrKnickers/max2alamo-2026/pull/22), shipped)
+
+Vanilla material chunks (`0x10100`) carry typed per-material parameter values as `0x10106` FLOAT4 + `0x10103` FLOAT mini-chunks, but Phase 4c only wrote the shader name + (optional) `BaseTexture`. The engine fell back to compile-time shader defaults (`Specular = (1,1,1)`, `Shininess = 32`) — combined with PG's `* 2.0` brightness multiplier in `MeshBumpColorize`, this produced saturated highlights even when the modder had dialled Specular down in Max.
+
+Pipeline:
+
+```
+Max DirectX Shader material ParamBlock(0)
+   -- IDxMaterial docs: hosts the effect params with names matching the .fx file
+↓
+scene_walker::extract_pblock_params
+   -- iterates the block; maps TYPE_FLOAT / TYPE_RGBA / TYPE_FRGBA /
+   -- TYPE_POINT3 / TYPE_POINT4 / TYPE_BITMAP -> typed MaterialParam
+↓
+ExportMaterial::params  (new field)
+↓
+shader_table::params_for / contains  (new format-library module)
+   -- maps shader filename -> canonical ordered (name, kind, default) list.
+   -- Walker values override defaults; defaults emit when source didn't override.
+   -- Source of truth: Gaukler's material_parameter_dict + empirical vanilla.
+↓
+alo_build::build_submesh_material  (updated)
+   -- emits in canonical vanilla order. Scalars/vectors always emit; textures
+   -- only when filename non-empty. Falls back to Phase 4 layout for unknown shaders.
+↓
+0x10106 / 0x10103 chunks  (new build_float_param, build_float4_param writers)
+```
+
+[PR #22](https://github.com/DrKnickers/max2alamo-2026/pull/22) added the float3-declared-param alpha=0 convention: vanilla content writes 0.0 in the 4th slot of params declared `float3` in PG's `.fxh` (Emissive, Diffuse, Specular, CityColor…) while preserving the 4th slot for genuine `float4` params (Colorization, UVOffset, Color, DebugColor, Atmosphere). Max's `TYPE_FRGBA` returns AColor with alpha=1; the writer zeros the alpha when `ParamSpec::is_float3` is set. Audit: every `V()` factory call in the shader table maps to a float3 declaration, every `V4()` to a genuine float4.
+
+Verified byte-for-byte against vanilla `EB_CHECKPOINTSTRUCTURE.ALO`'s `MeshBumpColorize` material chunk:
+
+| Field | Vanilla size | Our output |
+|---|---|---|
+| Emissive (FLOAT4) | 29 | 29 |
+| Diffuse (FLOAT4) | 28 | 28 |
+| Specular (FLOAT4) | 29 | 29 |
+| Shininess (FLOAT) | 18 | 18 |
+| Colorization (FLOAT4) | 33 | 33 |
+| UVOffset (FLOAT4) | 29 | 29 |
+
+### Phase 6d — Coord-frame banner in `.export.log` ([PR #21](https://github.com/DrKnickers/max2alamo-2026/pull/21), shipped)
+
+Every export's `.export.log` now opens with a coordinate-frame statement so future-you doesn't have to wonder:
+
+```
+max2alamo material diagnostics
+==============================
+
+Coordinate frame: Z up, -Y forward, +X right (Max-native; matches EaW engine)
+
+top-level node count: N
+...
+```
+
+The convention itself was already correct in the walker (no axis remapping; `IGameConversionManager::IGAME_MAX` preserves Max's native frame), but it lived only in source comments. Empirical confirmation came from the Executor Star Destroyer: engine bones at +Y (~+1875), bow at -Y (~-1870), so EaW expects -Y as the model's forward.
+
+### Max-side test harness ([PR #23](https://github.com/DrKnickers/max2alamo-2026/pull/23), shipped) + integration test ([PR #26](https://github.com/DrKnickers/max2alamo-2026/pull/26))
+
+Format-library unit tests cover the writer half (CI-runnable, no Max needed), but until now the **walker half** — IGame extraction, paramblock reads, skin modifier handling — had no automated coverage. Manual verification through the Max GUI was the only signal.
+
+This adds a one-command runner that exercises the full pipeline through real 3ds Max via `3dsmaxbatch.exe`:
+
+```
+tests/maxscript/
+  _harness.ms                       # shared MAXScript helpers
+  test_static_box.ms                # one scene per file
+  test_two_meshes_offset.ms
+  test_bumpcolorize_params.ms
+  test_bone_hierarchy.ms
+  test_skinned_cylinder.ms
+  test_skinned_rskin.ms             # PR #26 integration
+  verify/
+    _alo.py                         # read-only chunk-tree parser
+    verify_test_<name>.py           # one assertion script per test
+scripts/
+  run-max-tests.ps1                 # discover + dispatch + report
+```
+
+`powershell -File scripts/run-max-tests.ps1` discovers every `tests/maxscript/test_*.ms`, runs each through 3dsmaxbatch when its cached output is stale (or the installed `.dle` is newer), dispatches the paired Python verifier, and reports pass/fail. Timestamp-based caching saves the ~25-second Max boot per test on no-op runs.
+
+Current coverage (6 tests, all green):
+
+| Test | Pins behaviour from |
+|---|---|
+| `test_static_box` | Phase 4 baseline (Root + per-mesh bone, 144B vertex layout, Standard fallback to `MeshAlpha.fx`) |
+| `test_two_meshes_offset` | Phase 4c-fix bone WorldTM bake |
+| `test_bumpcolorize_params` | Phase 6c DXMaterial ParamBlock extraction + float3 alpha=0 |
+| `test_bone_hierarchy` | Phase 5a real bone hierarchy + local-to-parent matrices |
+| `test_skinned_cylinder` | Phase 5b single-bone skinning via IGameSkin |
+| `test_skinned_rskin` | Integration: 5a + 5b + 6a + 6c all firing on one mesh with `RSkinBumpColorize.fx` |
+
+The harness is **not CI-runnable** (needs Max install + license seat). It's an on-demand local tool; CI keeps the format-library tests.
+
+### Phase 5a — Real bone hierarchy walk ([PR #24](https://github.com/DrKnickers/max2alamo-2026/pull/24), shipped)
+
+Structural foundation for skinned export. Adds a bone-hierarchy pass that runs BEFORE the mesh walk in `walk_scene`, populating `ExportScene.bones` with real `IGAME_BONE` nodes carrying real `parent_index` links (pointing at the nearest exportable-bone ancestor, or 0 = synthetic Root) and local-to-parent matrices via `IGameNode::GetLocalTM()` — matching vanilla `0x206` chunks (confirmed against `AI_DACTILLION.ALO`).
+
+Index ordering after the new pass:
+
+```
+[0]     synthetic Root sentinel (parent = 0xFFFFFFFF)
+[1..N]  real Max bones (parent links real, local-to-parent matrices)
+[N+1..] synthetic per-mesh attachment bones (parent = Root, world TM)
+```
+
+Scope: `IGAME_BONE` only. `IGAME_BIPED` subtypes and helpers tagged `Alamo_Export_Transform` are Phase 5d. Meshes still emit synthetic per-mesh attachment bones regardless of whether they have a Skin modifier — that gets reworked in Phase 5b for skinned meshes.
+
+The `test_bone_hierarchy` regression specifically discriminates local-vs-world: a 3-bone chain along world +Y produces 25-unit local-offset translations between successive bones. If any future refactor regresses to `GetWorldTM`, B_Tip would show translation magnitude 50 (world position) instead of 25 (local-to-parent offset); the verifier prints a pointed diagnostic in that case.
+
+### Phase 5b — Single-bone skinning via IGameSkin ([PR #25](https://github.com/DrKnickers/max2alamo-2026/pull/25), shipped)
+
+Wires the `IGameSkin` modifier into the walker. Each face-corner vertex now reads its skin weights from the modifier, picks the **bone with the highest weight** (rigid attachment to the dominant bone), and writes that bone's index to `boneIdx[0]` with weight 1.0. Slots 1..3 stay unused; smooth multi-bone weighted deformation is Phase 5c.
+
+Per-mesh routing:
+
+| State | Behaviour |
+|---|---|
+| **Static** (no Skin modifier) | Unchanged Phase 4c. Synthetic per-mesh attachment bone parented to Root with the mesh's WorldTM baked in. `object#i → per-mesh-bone`. Every vertex's slot 0 points at the per-mesh bone. |
+| **Skinned** (Skin modifier present) | **No per-mesh attachment bone.** `object#i → bone#0 (Root)`, matching vanilla content (`AI_DACTILLION.ALO`). Per-vertex slot 0 carries the dominant bone's index in the real hierarchy. |
+
+Format-library refactor: `ExportVertex` gained per-vertex `bone_indices[4]` + `weights[4]` (default `{0,0,0,0}` / `{1,0,0,0}` = "rigidly bound to Root"). These are now the source of truth for the boneIdx/weight slots in the 144 B vertex record. `append_vertex` reads them directly; `build_vertex_chunk` and `build_submesh_geometry` simplified to match. The `bone_index` parameter passed through `build_submesh_geometry` from Phase 4c is gone.
+
+Walker side new: `SkinContext` struct carries `IGameSkin*` + the `(INode* -> bone index)` map populated by `walk_bones` + a fallback bone index. `resolve_dominant_bone(ctx, vert_idx)` does per-vertex dispatch — picks max weight among the skin's bones, resolves the IGameNode → INode → ExportScene index via the map.
+
+The `test_skinned_cylinder` regression validates with a 3-bone chain + skinned cylinder where each Y-row rigid-attaches to a different chain bone; the verifier asserts 4 bones (no per-mesh bone), connection to Root, per-vert `boneIdx[0] ∈ {1,2,3}` (never 0), and distribution non-degenerate (all three chain bones receive bindings). The `test_skinned_rskin` integration verifies the full Phase 5 + Phase 6 stack interacts correctly on one mesh.
+
 ---
 
 ## Future phase plans
 
-### Phase 5 — Skeleton + skinning (next)
+### Phase 5c — Multi-bone weighted skinning (next)
 
-Real bones — replace Phase 4's per-mesh synthetic attachment bones with the actual Max hierarchy. Pre-staged work: Phase 4 already established the per-mesh bone convention; Phase 5 puts a real skeleton + multi-bone vertex weights in place of the single-bone-per-vertex Phase 4 default.
+Extend Phase 5b's single-bone path to populate slots 1..3 of the boneIdx/weight tail. Most vanilla content is rigid-attachment (per AI_DACTILLION's 1-bone-per-vertex pattern), but smooth deformation across joints needs the full 4-bone weighted layout.
 
 Rough scope:
-- Bone discovery (Max bones / Biped / dummies tagged `Alamo_Export_Transform` user property). Build the hierarchy in `ExportScene.bones` with real parent indices.
-- Bake each bone's Max world transform into the column-major `matrix` (Phase 4 left this as identity).
-- Skin-modifier extraction: per-vertex up to 4 (boneIdx, weight) tuples. Layout in the existing 144-byte vertex chunk: boneIdx in offsets 112..128, weights in 128..144 (we already write `[bone_index, 0, 0, 0]` / `[1, 0, 0, 0]` for the single-bone Phase 4 case; multi-bone fills slots 1..3 with real data).
-- `Alamo_Billboard_Mode` user prop → emit `0x206` (with billboard) instead of `0x205` (we already always emit `0x206` with billboard=0; just need to read the prop).
-- Connections section update: mesh attaches to whichever bone holds it in Max's hierarchy, not to the synthetic per-mesh bone.
+- `resolve_multi_bone(ctx, vert_idx)` helper alongside the existing `resolve_dominant_bone`. Returns the top-4 bones by weight + normalized weights summing to 1.
+- Handle the "vertex influenced by >4 bones" case (drop smallest, renormalize).
+- `build_mesh` populates per-vertex `bone_indices[1..3]` and `weights[1..3]` from the helper.
+- New `test_smooth_skinned_joint.ms`: smooth-painted weights across one joint; verifier asserts the joint-adjacent verts split between two bones with weights summing to 1.
 
-Acceptance: a 4-bone-weighted skinned mesh exported from Max imports correctly via Mike Lankamp's importer (deformations match in-Max preview); animated turret on a fighter rotates correctly in-game in EaW.
+Acceptance: a smooth-skinned cylinder mesh's joint vertices report ~50/50 weight splits between the two bones flanking the joint, matching Max's Skin modifier preview. End-to-end correctness check via round-trip of a Mike-imported vanilla rigged model (e.g. an X-wing's S-foils or a stormtrooper).
 
-Likely Phase 5 risks:
-- Vertex-to-bone mapping: our current scheme assumes each mesh has one bone. Real skinning has 4 bones per vertex with varying weights — easy to introduce off-by-one errors in the boneIdx mapping. Mitigation: round-trip a Mike-imported vanilla rigged model (e.g. an X-wing's S-foils or a stormtrooper) — same correctness oracle pattern Phase 1/2 used.
-- Coordinate frame: Phase 4's identity transforms aren't a stress test. Real Max hierarchies have non-trivial parent-child relationships, rotation, scale. Verify with an asymmetric multi-bone test scene.
+Risks: handedness/orientation of skin transforms when bones have rotation (Phase 5a/5b only tested chains with bone axis = world Y rotated 90°). Mitigation: an asymmetric multi-bone test scene with rotated bones.
 
-### Phase 6 — Materials + shader parameters
+### Phase 5d — `Alamo_*` user-property family
 
-Port `material_parameter_dict`, `vertex_format_dict`, `bumpMappingList` from `Blender-ALAMO-Plugin/io_alamo_tools/settings.py` into a data-driven `shader_table.h`. Implement chunks `0x10101` (shader name) + `0x10102`–`0x10106` (INT, FLOAT, FLOAT3, FLOAT4, TEXTURE param mini-chunks).
+Read remaining legacy user props that the corpus survey identified: `Alamo_Billboard_Mode` (→ select 0x205 vs 0x206 chunk variant or set `billboard_mode != 0`), `Alamo_Export_Transform` (mark a Helper / Dummy as an exportable bone, complementing the IGAME_BONE auto-detection in 5a), `Alamo_Geometry_Hidden` / `Alamo_Collision_Enabled` (mesh-level flags), `Alamo_Alt_Decrease_Stay_Hidden`. Small scope: one read per prop, write into `ExportBone` / `ExportMesh`. Coverage test via the harness.
 
-Map Max DirectX Shader material → Alamo shader + params with full fidelity. Map Standard material → a documented default (`MeshBumpColorize.fx` or similar) with sensible defaults, surfacing a warning when info is lost.
+### Phase 6e (optional polish) — Walker-side `.export.log` consistency
 
-Acceptance: top 5 Petroglyph shaders (`MeshBumpColorize.fx`, `MeshBumpSpecular.fx`, `RSkinBumpColorize.fx`, `MeshShadowVolume.fx`, `MeshCollision.fx` or similar) export with full parameter fidelity. Verified by exporting then comparing in-game render to a vanilla model using the same shader.
+`.export.log` currently dumps params with their walker-side values (Max's `TYPE_FRGBA` returns alpha=1). The on-disk bytes correctly apply the Phase 6c float3 alpha-zero convention before writing, so a quick reader of the log might see `Emissive = (0, 0, 0, 1)` and think the bytes say the same. Cheap fix: apply the same `is_float3` zero-out at log time, so the diagnostic mirrors the bytes. Pure clarity; no functional change.
 
 ### Phase 7 — Lights, hardpoints, proxies
 
@@ -254,6 +417,20 @@ cmake --build build --config Release --target max2alamo
 # Install plugin into Max (requires elevation)
 Copy-Item build\max2alamo\Release\max2alamo.dle `
     "C:\Program Files\Autodesk\3ds Max 2026\Plugins\"
+
+# Run the Max-side end-to-end regression suite (needs Max + license).
+# Re-exports only stale tests; ~25 sec per test that needs re-running.
+powershell -File scripts/run-max-tests.ps1
+
+# Run a single Max-side test, forcing re-export.
+powershell -File scripts/run-max-tests.ps1 -Filter test_skinned_* -Force
+
+# Regenerate the Effects11 stub shaders from the manifest.
+python scripts/generate-max-preview-stubs.py
+
+# Synthesize an .alo from a hard-coded ExportScene (sanity check the writer
+# without launching Max).
+build\tools\alo_synth\Release\alo_synth.exe path\to\test.alo
 
 # Renew interaction limits manually
 bash scripts/renew-interaction-limits.sh
