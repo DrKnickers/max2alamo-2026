@@ -7,6 +7,7 @@ add_library(alamo_format STATIC
     src/ala_reader.cpp
     src/alo_build.cpp
     src/shader_table.cpp
+    src/skin_weights.cpp
 )
 
 target_include_directories(alamo_format PUBLIC include)

@@ -36,13 +36,15 @@ struct ExportVertex {
     // runtime; the scene walker now populates them from the source mesh.
     std::array<float, 3> tangent{0.f, 0.f, 0.f};
     std::array<float, 3> binormal{0.f, 0.f, 0.f};
-    // Per-vertex skin binding (Phase 5b). For static / rigid-attachment
-    // meshes the walker writes the same per-mesh bone into slot 0 of every
-    // vertex with weight 1.0 (Phase 4c convention). For skinned meshes
-    // (those with a Skin modifier) each vertex's slot 0 carries its
-    // dominant bone index. Phase 5c will populate slots 1..3 for smooth
-    // multi-bone deformation. Default is "rigidly bound to Root", which is
-    // a safe sentinel for any caller that forgets to populate explicitly.
+    // Per-vertex skin binding. For static / rigid-attachment meshes the
+    // walker writes the same per-mesh bone into slot 0 of every vertex
+    // with weight 1.0 (Phase 4c convention). For skinned meshes (those
+    // with a Skin modifier) the top 4 weighted influences from the
+    // IGameSkin modifier populate slots 0..3 (Phase 5c) -- weights are
+    // renormalized to sum to 1.0; vertices with <4 influences leave
+    // trailing slots at (index=0, weight=0). Default is "rigidly bound
+    // to Root", which is a safe sentinel for any caller that forgets to
+    // populate explicitly.
     std::array<std::uint32_t, 4> bone_indices{0u, 0u, 0u, 0u};
     std::array<float, 4>         weights     {1.f, 0.f, 0.f, 0.f};
 };

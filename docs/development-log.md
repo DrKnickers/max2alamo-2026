@@ -31,8 +31,8 @@ Single-file project status + history. Open this first when picking up a new sess
 | 4c-fix | Bone WorldTM bake | ✅ shipped | [PR #17](https://github.com/DrKnickers/max2alamo-2026/pull/17) — multi-mesh scenes export at their authored positions (no longer collapsed to origin) |
 | 5a | Real bone hierarchy + local matrices | ✅ shipped | [PR #24](https://github.com/DrKnickers/max2alamo-2026/pull/24) — `IGAME_BONE` walk with `GetLocalTM`; verified by `test_bone_hierarchy.ms` |
 | 5b | Single-bone skinning via IGameSkin | ✅ shipped | [PR #25](https://github.com/DrKnickers/max2alamo-2026/pull/25) — skinned cylinder exports with per-vertex dominant-bone refs; connects to Root |
-| 5c | Multi-bone weighted skinning | ⏭ next | 4-bone-weighted smooth-skinned mesh round-trips through Mike's importer |
-| 5d | `Alamo_*` user-property family (Billboard_Mode, etc.) | pending | Property-driven mesh attributes survive export |
+| 5c | Multi-bone weighted skinning | ✅ shipped | smooth-painted joint splits 50/50 between flanking bones with weights summing to 1.0; verified by `test_smooth_skinned_joint.ms` |
+| 5d | `Alamo_*` user-property family (Billboard_Mode, etc.) | ⏭ next | Property-driven mesh attributes survive export |
 | 6a | Effects11 shader stubs for Max 2026 | ✅ shipped | [PR #18](https://github.com/DrKnickers/max2alamo-2026/pull/18) — all 39 PG shaders load in Max 2026's DXSM with PG parameter UIs |
 | 6b | Per-vertex tangent + binormal export | ✅ shipped | [PR #19](https://github.com/DrKnickers/max2alamo-2026/pull/19) — MikkT via `IGameMesh::GetFaceVertexTangentBinormal`; bump shading works |
 | 6c | Per-material parameter export | ✅ shipped | [PR #20](https://github.com/DrKnickers/max2alamo-2026/pull/20) + [#22](https://github.com/DrKnickers/max2alamo-2026/pull/22) — DXMaterial ParamBlock → typed `0x10103/6` chunks; float3 alpha=0 convention |
@@ -304,6 +304,7 @@ Current coverage (6 tests, all green):
 | `test_bone_hierarchy` | Phase 5a real bone hierarchy + local-to-parent matrices |
 | `test_skinned_cylinder` | Phase 5b single-bone skinning via IGameSkin |
 | `test_skinned_rskin` | Integration: 5a + 5b + 6a + 6c all firing on one mesh with `RSkinBumpColorize.fx` |
+| `test_smooth_skinned_joint` | Phase 5c multi-bone weighted skinning (smooth-painted joint, 50/50 split, normalized) |
 
 The harness is **not CI-runnable** (needs Max install + license seat). It's an on-demand local tool; CI keeps the format-library tests.
 
@@ -340,23 +341,22 @@ Walker side new: `SkinContext` struct carries `IGameSkin*` + the `(INode* -> bon
 
 The `test_skinned_cylinder` regression validates with a 3-bone chain + skinned cylinder where each Y-row rigid-attaches to a different chain bone; the verifier asserts 4 bones (no per-mesh bone), connection to Root, per-vert `boneIdx[0] ∈ {1,2,3}` (never 0), and distribution non-degenerate (all three chain bones receive bindings). The `test_skinned_rskin` integration verifies the full Phase 5 + Phase 6 stack interacts correctly on one mesh.
 
+### Phase 5c — Multi-bone weighted skinning (shipped)
+
+Generalises Phase 5b's "dominant bone, weight = 1.0" path to read every (bone, weight) pair from `IGameSkin` and pack the top 4 by weight (renormalized to sum to 1.0) into the 4-slot vertex tail. Splits the logic in two:
+
+- **Pure host-agnostic packer** in `alamo_format::skin::top4_normalized` (new `alamo_format/skin_weights.{h,cpp}`). Takes a vector of `(bone_index, weight)` pairs and a fallback bone index; returns a `VertexBinding { bone_indices[4], weights[4] }` with the top 4 by weight renormalized so the slots sum to 1.0, ties broken on `bone_index` ascending for serialization determinism. Non-positive weights are dropped defensively. CI-testable without Max — 9 new unit tests cover empty input, all-zero weights, single/three/four bones, >4 with drop+renormalize, negative-weight dropping, 50/50 tie-break, and unnormalized input.
+- **Walker adapter** `resolve_multi_bone` in `scene_walker.cpp` replaces `resolve_dominant_bone`. Iterates `IGameSkin::GetNumberOfBones / GetWeight / GetIGameBone`, maps each influence's `INode*` through `walk_bones`' `bone_map` to an `ExportScene` bone index, drops un-mappable influences (rather than coalescing them into the fallback, since "bone influence pointing at something we don't export" is a missing-content signal we'd want to surface, not silently steer to the per-mesh bone), and hands the result to `top4_normalized`. Static meshes still short-circuit to a rigid binding (slot 0 = per-mesh attachment bone, weight = 1.0).
+
+`ExportVertex::bone_indices[4]` / `weights[4]` were already in the format library (added speculatively in Phase 5b); this PR just populates slots 1..3 for skinned meshes for the first time. The 144 B writer in `alo_build.cpp` was already pass-through.
+
+`test_smooth_skinned_joint.ms` validates: a 2-bone chain spanning a 40-unit joint, with smooth-painted weights across a 40-unit transition band (linear blend, w_B1 = clamp((Y - 20) / 40, 0, 1)). 432 face-corner vertices export with 48 joint-50/50 splits, 144 each pure-B0 / pure-B1, weights summing to 1.0 in every vertex, and at least one multi-bone influence pinning the regression to the 5b → 5c lift (a regression to single-bone would leave every `weights[1..3] == 0` and the verifier catches it).
+
+3dsmaxbatch quirk encountered while writing the test: `skinOps.GetNumberVertices` returns 0 in batch mode even when Skin is fully attached (the modifier-panel UI state needed to populate the cache isn't entered). The existing skinned tests "passed" because Skin's envelopes auto-assign weights when no explicit painting runs, but explicit smooth weights need a real iteration. Workaround: drive the per-vertex loop from `snapshotAsMesh cyl`'s `numverts` instead. `skinOps.SetVertexWeights` itself does accept explicit vertex indices even when `GetNumberVertices` lies.
+
 ---
 
 ## Future phase plans
-
-### Phase 5c — Multi-bone weighted skinning (next)
-
-Extend Phase 5b's single-bone path to populate slots 1..3 of the boneIdx/weight tail. Most vanilla content is rigid-attachment (per AI_DACTILLION's 1-bone-per-vertex pattern), but smooth deformation across joints needs the full 4-bone weighted layout.
-
-Rough scope:
-- `resolve_multi_bone(ctx, vert_idx)` helper alongside the existing `resolve_dominant_bone`. Returns the top-4 bones by weight + normalized weights summing to 1.
-- Handle the "vertex influenced by >4 bones" case (drop smallest, renormalize).
-- `build_mesh` populates per-vertex `bone_indices[1..3]` and `weights[1..3]` from the helper.
-- New `test_smooth_skinned_joint.ms`: smooth-painted weights across one joint; verifier asserts the joint-adjacent verts split between two bones with weights summing to 1.
-
-Acceptance: a smooth-skinned cylinder mesh's joint vertices report ~50/50 weight splits between the two bones flanking the joint, matching Max's Skin modifier preview. End-to-end correctness check via round-trip of a Mike-imported vanilla rigged model (e.g. an X-wing's S-foils or a stormtrooper).
-
-Risks: handedness/orientation of skin transforms when bones have rotation (Phase 5a/5b only tested chains with bone axis = world Y rotated 90°). Mitigation: an asymmetric multi-bone test scene with rotated bones.
 
 ### Phase 5d — `Alamo_*` user-property family
 
