@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure (CMake)
-        run: cmake -B build -S . -G "Visual Studio 17 2022" -A x64
+        run: cmake -B build -S . -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON
 
       - name: Build (Release)
         run: cmake --build build --config Release --parallel
@@ -33,6 +33,10 @@ jobs:
             }
             Write-Host "OK: $tool"
           }
+
+      - name: Run unit tests
+        working-directory: build
+        run: ctest --build-config Release --output-on-failure --no-tests=error
 
   # Note: the max2alamo .dle is intentionally NOT built here. The 3ds Max 2026
   # SDK is not redistributable, so the plugin builds only on developer machines

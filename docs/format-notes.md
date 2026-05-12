@@ -28,7 +28,7 @@ struct Chunk {
 };
 ```
 
-- `size_with_flag = (payload_size & 0x7FFFFFFF) | (is_leaf ? 0x80000000 : 0)`. The high bit indicates a **leaf** (data) chunk vs. a **container** chunk holding further chunks. Confirmed in `alamo2max.ms:250-251`.
+- `size_with_flag = (payload_size & 0x7FFFFFFF) | (is_container ? 0x80000000 : 0)`. The high bit indicates a **container** chunk (children follow) vs. a **leaf** chunk (raw data). Confirmed by direct observation of vanilla files (e.g. the top-level `0x200` in `W_BUGS.ALO` has size word `0x8000019B`) and matches `alamo2max.ms:250-251`, where `m_size = -1` (sentinel for "in container, no current leaf") is set when the high bit is present.
 - Sizes count payload bytes only.
 - Container chunks have no inter-chunk padding; children are written back-to-back.
 
@@ -64,8 +64,10 @@ Reference: `alamo2max.ms:647-715`.
 
 | ID | Kind | Payload |
 |---|---|---|
-| `0x201` | leaf | `uint32 boneCount` |
+| `0x201` | leaf, **always 128 bytes** | `uint32 boneCount` followed by 124 reserved bytes (zero-filled in vanilla content) |
 | `0x202` | container, repeated `boneCount` times | per-bone block |
+
+The 124 reserved bytes after `boneCount` in `0x201` were observed to be all-zero across multiple vanilla files (`W_BUGS.ALO`, `ICON_RV_NEBULONB.ALO`, etc.). Likely a fixed-size header for forward compatibility. Our writer emits 4 bytes count + 124 zero bytes.
 
 Per-bone block (`0x202`):
 
@@ -432,7 +434,8 @@ For v1, **emit FoC format** by default — it's smaller, both engines support it
 | # | Question | Resolution path |
 |---|---|---|
 | 1 | RSkin and non-skinned vertex layouts: confirm byte sizes inferred from name suffixes. | Phase 1: `alo_dump` on vanilla `.alo` files; for each `0x10100`, divide vertex chunk size by `vertexCount` to get bytes-per-vertex; cross-check against the table in this doc. |
-| 2 | `0x402` mesh metadata: is the bbox 6 floats (min/max) or 7 floats with one being a center/radius? Importer skips with `Seek(7 * 4)` then reads two `uint32`s. | Phase 1: dump and inspect a few. |
+| 2 | `0x402` mesh metadata: is the bbox 6 floats (min/max) or 7 floats with one being a center/radius? Importer skips with `Seek(7 * 4)` then reads two `uint32`s. | Phase 1: dump and inspect a few via `alo_dump`. |
+| 2b | `0x201` reserved 124 bytes: confirmed all-zero across sampled files. **Resolved.** | — |
 | 3 | `0x10002` vertex format chunk payload: just the format string? Format flags? | Phase 1: dump and inspect. |
 | 4 | Format-version indicator: how does the engine distinguish EaW-style vs FoC-style `.ala` for a given file? | Phase 8: presence/absence of mini-chunks 11/12/13 in `0x1001` is the signal (per `alamo2max.ms:855-861`). |
 | 5 | Collision tree (`0x1200`-`0x1203`) internal structure. | Phase 4 / 5 if collision export is needed; not required for static rendering. |

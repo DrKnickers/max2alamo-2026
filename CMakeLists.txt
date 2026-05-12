@@ -13,6 +13,12 @@ if(MSVC)
     add_compile_options(/W4 /permissive- /utf-8)
 endif()
 
+include(CTest)
+
 add_subdirectory(alamo_format)
 add_subdirectory(tools/alo_dump)
 add_subdirectory(tools/alo_roundtrip)
+
+if(BUILD_TESTING)
+    add_subdirectory(alamo_format/tests)
+endif()
