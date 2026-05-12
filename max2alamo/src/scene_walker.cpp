@@ -169,6 +169,16 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh, alamo_format::ExportMesh& out
         return false;  // skip degenerate / empty meshes
     }
 
+    // Tangent / binormal availability. IGame populates these (MikkTSpace by
+    // default in Max 2014+) when the mesh has a normal-mapped material or
+    // the user enabled "Tangents and Bitangents" in preferences. If absent,
+    // we still export -- the vertex chunk will carry zero tangents, the
+    // .export.log notes it, and downstream bump shaders render incorrectly.
+    // Phase 6b future: fall back to vendored MikkTSpace computation here so
+    // tangent space is always written regardless of Max-side configuration.
+    const int num_tangents = gmesh->GetNumberOfTangents();
+    const bool have_tangents = num_tangents > 0;
+
     // Phase 4: single submesh, single material slot. Material extraction
     // handles both Standard and DirectX Shader (DXMaterial) materials,
     // recursing one level into Multi/Sub-Object. Full per-face matID
@@ -219,9 +229,30 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh, alamo_format::ExportMesh& out
             v.normal = { nrm.x, nrm.y, nrm.z };
 
             // Map channel 1 = standard UV channel in Max.
-            const Point2 tex = gmesh->GetTexVertex(static_cast<int>(face->texCoord[corner]));
+            const int tex_idx = static_cast<int>(face->texCoord[corner]);
+            const Point2 tex = gmesh->GetTexVertex(tex_idx);
             // V-flip on write (Alamo / D3D convention vs Max convention).
             v.uv = { tex.x, 1.0f - tex.y };
+
+            // Tangent-space basis. IGame keeps tangents in their own array,
+            // indexed separately from texCoords -- you cannot reuse the
+            // texCoord index here (Box meshes split tangents per face but
+            // share texCoords across faces, so reusing texCoord index gives
+            // tangent vectors from the wrong face). `GetFaceVertexTangentBinormal`
+            // returns the correct shared index for both arrays, or -1 if
+            // IGame didn't compute tangents for this mesh.
+            if (have_tangents) {
+                const int tb_idx = gmesh->GetFaceVertexTangentBinormal(f, corner);
+                if (tb_idx >= 0 && tb_idx < num_tangents) {
+                    const Point3 tan = gmesh->GetTangent(tb_idx);
+                    const Point3 bin = gmesh->GetBinormal(tb_idx);
+                    v.tangent  = { tan.x, tan.y, tan.z };
+                    v.binormal = { bin.x, bin.y, bin.z };
+                }
+            }
+            // else: tangent/binormal stay at the zero default. Logged once
+            // per mesh via .export.log so the user can tell why bump-lit
+            // shaders render flat.
 
             sub.vertices.push_back(v);
             sub.indices.push_back(static_cast<std::uint32_t>(sub.vertices.size() - 1u));
@@ -323,6 +354,27 @@ void log_node_material(IGameNode* node, std::ostringstream& os)
     std::snprintf(node_name, sizeof(node_name), "%s",
                   to_utf8(node->GetName()).c_str());
     os << "Node \"" << node_name << "\":\n";
+
+    // Tangent-space availability. IGame populates these (MikkTSpace by
+    // default in Max 2014+) when the mesh has a normal-mapped material or
+    // when "Tangents and Bitangents" is enabled in Preferences. If zero,
+    // bump-mapped shaders render incorrectly because the .alo carries
+    // zero tangent / binormal vectors.
+    if (IGameObject* obj = node->GetIGameObject()) {
+        if (obj->GetIGameType() == IGameObject::IGAME_MESH && obj->InitializeData()) {
+            auto* gmesh = static_cast<IGameMesh*>(obj);
+            const int nt = gmesh->GetNumberOfTangents();
+            const int nb = gmesh->GetNumberOfBinormals();
+            os << "  tangents: " << nt << "  binormals: " << nb;
+            if (nt == 0 || nb == 0) {
+                os << "  (WARNING: not computed -- bump shaders will render flat. "
+                      "Enable normal map on material, or toggle Preferences -> "
+                      "General -> 'Tangents and Bitangents' on)";
+            }
+            os << "\n";
+        }
+        node->ReleaseIGameObject();
+    }
 
     IGameMaterial* gmat = node->GetNodeMaterial();
     if (!gmat) {

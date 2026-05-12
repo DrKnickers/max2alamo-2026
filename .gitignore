@@ -58,6 +58,10 @@ re/
 # Test corpus (Lucasfilm IP — local only)
 tests/corpus/
 
+# Python
+__pycache__/
+*.pyc
+
 # OS
 Thumbs.db
 desktop.ini
