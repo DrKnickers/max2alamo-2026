@@ -112,6 +112,23 @@ TEST_CASE("ChunkReader rejects chunks that overflow the buffer") {
     REQUIRE_THROWS_AS(r.read_header(), std::runtime_error);
 }
 
+TEST_CASE("ChunkReader overflow error message renders the chunk ID in hex") {
+    // The same scenario as above; verify the id appears as 0x200 (not decimal 512).
+    std::vector<std::uint8_t> buf{
+        0x00, 0x02, 0x00, 0x00,  // id 0x200
+        0xFF, 0x00, 0x00, 0x00,  // size = 255
+    };
+    ChunkReader r(buf.data(), buf.size());
+    try {
+        r.read_header();
+        FAIL("expected throw");
+    } catch (const std::runtime_error& e) {
+        std::string msg = e.what();
+        REQUIRE(msg.find("0x200") != std::string::npos);  // hex, not decimal
+        REQUIRE(msg.find("0x512") == std::string::npos);  // would be the decimal-with-0x bug
+    }
+}
+
 TEST_CASE("ChunkReader read_cstring stops at the null terminator") {
     std::vector<std::uint8_t> buf{ 'h', 'i', 0, 'X', 'Y' };
     ChunkReader r(buf.data(), buf.size());

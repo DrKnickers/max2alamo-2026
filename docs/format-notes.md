@@ -94,20 +94,21 @@ Reference: `alamo2max.ms:341-385`.
 | ID | Kind | Payload |
 |---|---|---|
 | `0x401` | leaf | null-terminated mesh name |
-| `0x402` | leaf | mesh metadata (see below) |
+| `0x402` | leaf, **always 128 bytes** | mesh metadata (see below); 88 reserved bytes after the documented fields |
 | `0x10100` | container, repeated per material | submesh material + geometry |
 
-Mesh metadata (`0x402`):
+Mesh metadata (`0x402`, always 128 bytes total):
 
 ```
-uint32  materialCount
-float   bbox[6]          // bounding box (assumed: minX,minY,minZ,maxX,maxY,maxZ — verify via alo_dump)
-uint32  unused           // skipped by importer
-uint32  isHidden         // boolean
-uint32  isCollisionMesh  // boolean
+uint32  materialCount         // offset 0
+float   bbox_or_other[6]      // offset 4..28  (bounding box; layout TBD - Mike's reader skips them)
+uint32  unused                // offset 28..32 (skipped by importer)
+uint32  isHidden              // offset 32..36
+uint32  isCollisionMesh       // offset 36..40
+uint8   reserved[88]          // offset 40..128 (zero-padded in vanilla content)
 ```
 
-Reference: `alamo2max.ms:546-550`.
+The 128-byte fixed size was confirmed across 10,678 `0x402` chunks in the vanilla corpus - same fixed-size-header pattern as `0x201`. Reference: `alamo2max.ms:546-550`.
 
 ---
 
@@ -434,8 +435,8 @@ For v1, **emit FoC format** by default — it's smaller, both engines support it
 | # | Question | Resolution path |
 |---|---|---|
 | 1 | RSkin and non-skinned vertex layouts: confirm byte sizes inferred from name suffixes. | Phase 1: `alo_dump` on vanilla `.alo` files; for each `0x10100`, divide vertex chunk size by `vertexCount` to get bytes-per-vertex; cross-check against the table in this doc. |
-| 2 | `0x402` mesh metadata: is the bbox 6 floats (min/max) or 7 floats with one being a center/radius? Importer skips with `Seek(7 * 4)` then reads two `uint32`s. | Phase 1: dump and inspect a few via `alo_dump`. |
-| 2b | `0x201` reserved 124 bytes: confirmed all-zero across sampled files. **Resolved.** | — |
+| 2 | `0x402` mesh metadata: bbox layout (6 floats min/max vs other?). | Internal layout still TBD; container size is **resolved** (always 128 bytes; documented fields take 40 bytes, remaining 88 are reserved). Decoder confirmed via cross-check on collision meshes (`hidden=1 collision=1` only on meshes with `MeshCollision.fx`). |
+| 2b | `0x201` reserved 124 bytes: confirmed all-zero across sampled files. **Resolved.** | --- |
 | 3 | `0x10002` vertex format chunk payload: just the format string? Format flags? | Phase 1: dump and inspect. |
 | 4 | Format-version indicator: how does the engine distinguish EaW-style vs FoC-style `.ala` for a given file? | Phase 8: presence/absence of mini-chunks 11/12/13 in `0x1001` is the signal (per `alamo2max.ms:855-861`). |
 | 5 | Collision tree (`0x1200`-`0x1203`) internal structure. | Phase 4 / 5 if collision export is needed; not required for static rendering. |

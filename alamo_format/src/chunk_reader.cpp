@@ -1,5 +1,6 @@
 #include "alamo_format/chunk_io.h"
 
+#include <cstdio>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -11,6 +12,12 @@ namespace {
 void read_le_bytes(const std::uint8_t* src, void* dst, std::size_t n) noexcept {
     // x86 / x86_64 are little-endian and unaligned-safe; just memcpy.
     std::memcpy(dst, src, n);
+}
+
+std::string hex(std::uint32_t v) {
+    char buf[12];
+    std::snprintf(buf, sizeof(buf), "0x%X", v);
+    return buf;
 }
 
 }  // namespace
@@ -38,8 +45,8 @@ ChunkHeader ChunkReader::read_header() {
     cursor_ += kChunkHeaderSize;
     if (cursor_ + h.payload_size > end_) {
         throw std::runtime_error("ChunkReader: chunk payload exceeds buffer at offset "
-            + std::to_string(h.header_offset) + " (id=0x"
-            + std::to_string(h.id) + ", size=" + std::to_string(h.payload_size) + ")");
+            + std::to_string(h.header_offset) + " (id=" + hex(h.id)
+            + ", size=" + std::to_string(h.payload_size) + ")");
     }
     return h;
 }
