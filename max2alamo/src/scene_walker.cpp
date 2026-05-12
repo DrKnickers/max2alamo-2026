@@ -377,6 +377,73 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh, alamo_format::ExportMesh& out
     return true;
 }
 
+// Encode a Max Matrix3 into the alamo_format 4x3 column-major-by-element
+// layout. Phase 4c established this for world TMs; Phase 5a reuses it
+// for both world TMs (synthetic per-mesh bones) and local-to-parent TMs
+// (real Max bones in the skeleton hierarchy).
+std::array<float, 12> encode_matrix3(const Matrix3& m3)
+{
+    const Point3 row0 = m3.GetRow(0);  // X axis
+    const Point3 row1 = m3.GetRow(1);  // Y axis
+    const Point3 row2 = m3.GetRow(2);  // Z axis
+    const Point3 trn  = m3.GetRow(3);  // translation
+    return {
+        row0.x, row1.x, row2.x, trn.x,
+        row0.y, row1.y, row2.y, trn.y,
+        row0.z, row1.z, row2.z, trn.z,
+    };
+}
+
+// Phase 5a: is this IGameNode an "exportable bone"? For now we accept
+// IGAME_BONE only (regular Max bones). Future work folds in:
+//   - IGAME_BIPED subtypes (Phase 5b/c)
+//   - Helpers (Point / Dummy / Arrow) tagged with the
+//     Alamo_Export_Transform user property (Phase 5d)
+bool is_exportable_bone(IGameNode* node)
+{
+    if (!node) return false;
+    IGameObject* obj = node->GetIGameObject();
+    if (!obj) return false;
+    const bool is_bone = (obj->GetIGameType() == IGameObject::IGAME_BONE);
+    node->ReleaseIGameObject();
+    return is_bone;
+}
+
+// Phase 5a bone-hierarchy walk. Runs BEFORE the mesh walk in walk_scene
+// so that scene.bones[0..N] are real Max bones (with local-to-parent
+// matrices) before walk_node appends synthetic per-mesh attachment bones
+// at indices N+1..
+//
+// `parent_bone_idx` is the index into scene.bones of the nearest
+// ancestor that is itself an exportable bone. Top-level Max bones (or
+// bones whose Max parents are not exportable) get parent_bone_idx = 0
+// = our synthetic Root.
+void walk_bones(IGameNode* node, std::uint32_t parent_bone_idx,
+                alamo_format::ExportScene& scene)
+{
+    if (!node) return;
+    std::uint32_t my_idx = parent_bone_idx;
+    if (is_exportable_bone(node)) {
+        alamo_format::ExportBone bone;
+        bone.name           = to_utf8(node->GetName());
+        bone.parent_index   = parent_bone_idx;
+        bone.visible        = node->IsNodeHidden() == FALSE;
+        bone.billboard_mode = 0;
+        // GetLocalTM returns the node's transform relative to its Max
+        // parent. For top-level bones this is the world transform (Max
+        // scene root is identity); for child bones it's the
+        // parent-inverse-times-world product computed by IGame. Either
+        // way, this is exactly what vanilla 0x206 chunks store.
+        const GMatrix local_tm = node->GetLocalTM();
+        bone.matrix = encode_matrix3(local_tm.ExtractMatrix3());
+        my_idx = static_cast<std::uint32_t>(scene.bones.size());
+        scene.bones.push_back(std::move(bone));
+    }
+    for (int i = 0; i < node->GetChildCount(); ++i) {
+        walk_bones(node->GetNodeChild(i), my_idx, scene);
+    }
+}
+
 // Recursively walk an IGameNode and its children, appending exportable
 // meshes (and a per-mesh attachment bone) to `scene`.
 void walk_node(IGameNode* node, alamo_format::ExportScene& scene)
@@ -400,23 +467,11 @@ void walk_node(IGameNode* node, alamo_format::ExportScene& scene)
                     bone.billboard_mode = 0;
                     // Vertices in build_mesh are read in object space. Bake
                     // the node's world transform into the bone so the mesh
-                    // lands at its Max world position. Without this, every
-                    // mesh stacks at the origin.
-                    const GMatrix world_tm = node->GetWorldTM();
-                    const Matrix3 m3 = world_tm.ExtractMatrix3();
-                    const Point3 row0 = m3.GetRow(0);  // X axis
-                    const Point3 row1 = m3.GetRow(1);  // Y axis
-                    const Point3 row2 = m3.GetRow(2);  // Z axis
-                    const Point3 trn  = m3.GetRow(3);  // translation
-                    // Column-major-by-element layout per export_scene.h:
-                    //   column 0 = (r1x, r2x, r3x, tx)
-                    //   column 1 = (r1y, r2y, r3y, ty)
-                    //   column 2 = (r1z, r2z, r3z, tz)
-                    bone.matrix = {
-                        row0.x, row1.x, row2.x, trn.x,
-                        row0.y, row1.y, row2.y, trn.y,
-                        row0.z, row1.z, row2.z, trn.z,
-                    };
+                    // lands at its Max world position. Phase 5b will rework
+                    // this when meshes have a Skin modifier (they'll attach
+                    // to a real bone in the hierarchy instead of getting a
+                    // synthetic per-mesh bone here).
+                    bone.matrix = encode_matrix3(node->GetWorldTM().ExtractMatrix3());
                     mesh.bone_index     = static_cast<std::uint32_t>(scene.bones.size());
                     scene.bones.push_back(std::move(bone));
                     scene.meshes.push_back(std::move(mesh));
@@ -618,6 +673,16 @@ bool walk_scene(Interface*                  /*max_interface*/,
     igame->SetStaticFrame(0);
 
     const int top_count = igame->GetTopLevelNodeCount();
+
+    // Pass 1 (Phase 5a): real Max bones with local-to-parent matrices.
+    // Must run before the mesh walk so scene.bones[0..N] are the real
+    // skeleton before walk_node appends synthetic per-mesh bones.
+    for (int i = 0; i < top_count; ++i) {
+        walk_bones(igame->GetTopLevelNode(i), /*parent_bone_idx=*/0, out);
+    }
+
+    // Pass 2: meshes + their synthetic per-mesh attachment bones (Phase 4c
+    // convention). Phase 5b will switch skinned meshes off this path.
     for (int i = 0; i < top_count; ++i) {
         walk_node(igame->GetTopLevelNode(i), out);
     }
