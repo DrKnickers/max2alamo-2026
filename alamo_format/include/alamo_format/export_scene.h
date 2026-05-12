@@ -75,13 +75,30 @@ struct ExportBone {
     std::uint32_t               parent_index   = kRootParent;
     bool                        visible        = true;
     std::uint32_t               billboard_mode = 0;
-    // 4x3 column-major transform; columns are
-    //   (m[0..2]), (m[3..5]), (m[6..8]), (m[9..11]).
-    // Identity by default. Real bone matrices come from Max in Phase 5.
-    std::array<float, 12>       matrix{1.f, 0.f, 0.f,
-                                       0.f, 1.f, 0.f,
-                                       0.f, 0.f, 1.f,
-                                       0.f, 0.f, 0.f};
+
+    // Transform stored as a 4x3 matrix in COLUMN-MAJOR order: 3 columns
+    // of 4 elements each. The conceptual matrix is:
+    //
+    //     | r1x r1y r1z |    row 1 = X axis
+    //     | r2x r2y r2z |    row 2 = Y axis
+    //     | r3x r3y r3z |    row 3 = Z axis
+    //     | tx  ty  tz  |    row 4 = translation
+    //
+    // On-disk layout (matches Mike Lankamp's reader in alamo2max.ms:374-378,
+    // which reads c[1..12] sequentially and builds a Max Matrix3 via
+    //   Matrix3 [c[1],c[5],c[9]] [c[2],c[6],c[10]] [c[3],c[7],c[11]] [c[4],c[8],c[12]]
+    // which is column-major-by-element):
+    //
+    //     matrix[0..4]   = column 0 = (r1x, r2x, r3x, tx)
+    //     matrix[4..8]   = column 1 = (r1y, r2y, r3y, ty)
+    //     matrix[8..12]  = column 2 = (r1z, r2z, r3z, tz)
+    //
+    // Identity transform in this layout: column 0 = (1,0,0,0), column 1 =
+    // (0,1,0,0), column 2 = (0,0,1,0). Phase 5 will bake real Max
+    // transforms here.
+    std::array<float, 12>       matrix{1.f, 0.f, 0.f, 0.f,
+                                       0.f, 1.f, 0.f, 0.f,
+                                       0.f, 0.f, 1.f, 0.f};
 };
 
 // Full snapshot of an exportable scene. The writer in Phase 4b consumes
