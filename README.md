@@ -14,7 +14,9 @@ If you're using this plugin, you should know that. If you're auditing the code, 
 
 ## Status
 
-**Pre-release, not yet feature-complete.** The repo is public so that GitHub Actions runs without consuming the private-repo Actions quota — visibility does not mean PRs are open. See [CONTRIBUTING.md](CONTRIBUTING.md). The first public release (v1.0) ships when EaW + FoC export is feature-complete (currently targeting completion of all phases listed in the project's GitHub issues).
+**Pre-release, not yet feature-complete.** The repo is public so that GitHub Actions runs without consuming the private-repo Actions quota — visibility does not mean PRs are open. See [CONTRIBUTING.md](CONTRIBUTING.md). The first public release (v1.0) ships when EaW + FoC export is feature-complete.
+
+For the full picture — what's shipped, what's next, where things live, key decisions, command cheat sheet — see **[`docs/development-log.md`](docs/development-log.md)**.
 
 ## Goals (v1)
 
