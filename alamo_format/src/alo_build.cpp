@@ -283,7 +283,14 @@ void emit_param_chunk(std::vector<ChunkNode>& kids,
             return;
         }
         case MaterialParam::Kind::Float4: {
-            const std::array<float, 4>& v = override_p ? override_p->value4 : spec.default_value4;
+            std::array<float, 4> v = override_p ? override_p->value4 : spec.default_value4;
+            // Vanilla content writes 0 in the 4th slot for float3-declared
+            // params (Emissive / Diffuse / Specular / CityColor / etc.) even
+            // though the on-disk chunk is still 16 bytes. Max's TYPE_FRGBA
+            // hands us AColor with alpha=1; force it to 0 here so we match.
+            if (spec.is_float3) {
+                v[3] = 0.0f;
+            }
             kids.push_back(build_float4_param(std::string(spec.name), v));
             return;
         }

@@ -172,6 +172,91 @@ TEST_CASE("0x10106 FLOAT4 chunk layout matches vanilla (name mini + value mini)"
     REQUIRE(values[2] == 1.f); REQUIRE(values[3] == 1.f);
 }
 
+TEST_CASE("Float3-declared params write 0 in the 4th slot (vanilla convention)") {
+    // MeshAlpha's `Specular` is declared `float3` in PG's Alpha.fxh. Vanilla
+    // .alo files encode it as a 16-byte FLOAT4 chunk with alpha=0. Max's
+    // TYPE_FRGBA would hand us alpha=1 -- the writer zeroes it via the
+    // ParamSpec::is_float3 flag.
+    auto tree = build_alo(minimal_cube_scene());
+    const ChunkNode& mat = tree[1].children[2];
+    const ChunkNode& specular = mat.children[3];  // Emissive, Diffuse, Specular, ...
+    REQUIRE(specular.id == 0x10106);
+    float values[4];
+    std::memcpy(values, specular.payload.data() + specular.payload.size() - 16, 16);
+    REQUIRE(values[0] == 1.f);
+    REQUIRE(values[1] == 1.f);
+    REQUIRE(values[2] == 1.f);
+    REQUIRE(values[3] == 0.f);  // ← float3-declared: 4th slot forced to 0
+}
+
+TEST_CASE("Float3 zero-out also fires when source material overrides the value") {
+    // Even when ExportMaterial::params supplies a non-default value with
+    // alpha=1 (as Max's TYPE_FRGBA does), the writer should strip the alpha
+    // for float3-declared params.
+    ExportScene s = ExportScene::with_root_bone();
+    ExportBone b; b.name = "Cube"; b.parent_index = 0; s.bones.push_back(b);
+    ExportMesh m;  m.name = "Cube"; m.bone_index = 1;
+    ExportSubmesh sub;
+    sub.material.shader_name = "MeshBumpColorize.fx";  // Specular is float3
+    MaterialParam p;
+    p.name = "Specular";
+    p.kind = MaterialParam::Kind::Float4;
+    p.value4 = { 0.3f, 0.3f, 0.3f, 1.0f };  // alpha=1 as Max would supply
+    sub.material.params.push_back(p);
+    for (int i = 0; i < 36; ++i) {
+        ExportVertex v;
+        v.position = { 0, 0, 0 }; v.normal = { 0, 0, 1 }; v.uv = { 0, 0 };
+        sub.vertices.push_back(v);
+        sub.indices.push_back(static_cast<std::uint32_t>(i));
+    }
+    m.submeshes.push_back(std::move(sub));
+    s.meshes.push_back(std::move(m));
+
+    auto tree = build_alo(s);
+    const ChunkNode& mat = tree[1].children[2];
+    // MeshBumpColorize order: shader_name, Emissive, Diffuse, Specular, ...
+    const ChunkNode& specular = mat.children[3];
+    REQUIRE(specular.id == 0x10106);
+    float v[4];
+    std::memcpy(v, specular.payload.data() + specular.payload.size() - 16, 16);
+    REQUIRE(v[0] == 0.3f);
+    REQUIRE(v[1] == 0.3f);
+    REQUIRE(v[2] == 0.3f);
+    REQUIRE(v[3] == 0.f);  // ← override alpha=1 still zeroed out
+}
+
+TEST_CASE("Genuine float4 params keep the 4th slot (Colorization, UVOffset, ...)") {
+    // MeshBumpColorize's Colorization is declared `float4` in
+    // BumpColorize.fxh -- vanilla content writes the full 4 components,
+    // including alpha. Our default = (0, 1, 0, 1); 4th slot must NOT be zeroed.
+    ExportScene s = ExportScene::with_root_bone();
+    ExportBone b; b.name = "M"; b.parent_index = 0; s.bones.push_back(b);
+    ExportMesh m; m.name = "M"; m.bone_index = 1;
+    ExportSubmesh sub;
+    sub.material.shader_name = "MeshBumpColorize.fx";
+    for (int i = 0; i < 36; ++i) {
+        ExportVertex v;
+        v.position = { 0, 0, 0 }; v.normal = { 0, 0, 1 }; v.uv = { 0, 0 };
+        sub.vertices.push_back(v);
+        sub.indices.push_back(static_cast<std::uint32_t>(i));
+    }
+    m.submeshes.push_back(std::move(sub));
+    s.meshes.push_back(std::move(m));
+
+    auto tree = build_alo(s);
+    const ChunkNode& mat = tree[1].children[2];
+    // MeshBumpColorize order: shader_name, Emissive, Diffuse, Specular,
+    // Shininess, Colorization, UVOffset, [BaseTexture, NormalTexture]
+    const ChunkNode& colorization = mat.children[5];
+    REQUIRE(colorization.id == 0x10106);
+    float v[4];
+    std::memcpy(v, colorization.payload.data() + colorization.payload.size() - 16, 16);
+    REQUIRE(v[0] == 0.f);
+    REQUIRE(v[1] == 1.f);
+    REQUIRE(v[2] == 0.f);
+    REQUIRE(v[3] == 1.f);  // ← genuine float4: 4th slot preserved
+}
+
 TEST_CASE("0x10103 FLOAT chunk layout matches vanilla (name mini + 4-byte value)") {
     auto tree = build_alo(minimal_cube_scene());
     const ChunkNode& mat = tree[1].children[2];
