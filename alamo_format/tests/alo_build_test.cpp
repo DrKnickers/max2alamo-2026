@@ -78,8 +78,9 @@ TEST_CASE("Bone container has 0x203 name + 0x206 data of 60 bytes") {
 TEST_CASE("Mesh info is exactly 128 bytes; first u32 is material count") {
     auto tree = build_alo(minimal_cube_scene());
     const ChunkNode& mesh = tree[1];
-    // children: 0x401 name, 0x402 info, 0x10100 submesh
-    REQUIRE(mesh.children.size() == 3);
+    // children: 0x401 name, 0x402 info, 0x10100 material, 0x10000 geometry
+    // (0x10100 and 0x10000 are SIBLINGS, not nested -- per vanilla layout)
+    REQUIRE(mesh.children.size() == 4);
     const ChunkNode& info = mesh.children[1];
     REQUIRE(info.id == 0x402);
     REQUIRE(info.payload.size() == 128);
@@ -88,33 +89,52 @@ TEST_CASE("Mesh info is exactly 128 bytes; first u32 is material count") {
     REQUIRE(mat_count == 1);
 }
 
-TEST_CASE("Submesh emits shader name, BaseTexture, and geometry container") {
+TEST_CASE("0x10100 contains shader name + BaseTexture but NOT geometry") {
     auto tree = build_alo(minimal_cube_scene());
-    const ChunkNode& submesh = tree[1].children[2];
-    REQUIRE(submesh.id == 0x10100);
-    REQUIRE(submesh.children.size() == 3);
-    REQUIRE(submesh.children[0].id == 0x10101);
-    REQUIRE(submesh.children[1].id == 0x10105);  // TEXTURE param
-    REQUIRE(submesh.children[2].id == 0x10000);
+    const ChunkNode& mat = tree[1].children[2];
+    REQUIRE(mat.id == 0x10100);
+    REQUIRE(mat.children.size() == 2);
+    REQUIRE(mat.children[0].id == 0x10101);
+    REQUIRE(mat.children[1].id == 0x10105);  // TEXTURE param
+}
+
+TEST_CASE("0x10000 geometry is a SIBLING of 0x10100 inside 0x400") {
+    auto tree = build_alo(minimal_cube_scene());
+    const ChunkNode& geom = tree[1].children[3];
+    REQUIRE(geom.id == 0x10000);
+    REQUIRE(geom.is_container);
+    // children: 0x10001 sizes, 0x10002 format name, 0x10007 verts, 0x10004 faces
+    REQUIRE(geom.children.size() == 4);
+}
+
+TEST_CASE("0x10001 sizes chunk is exactly 128 bytes") {
+    auto tree = build_alo(minimal_cube_scene());
+    const ChunkNode& geom = tree[1].children[3];
+    const ChunkNode& sizes = geom.children[0];
+    REQUIRE(sizes.id == 0x10001);
+    REQUIRE(sizes.payload.size() == 128);
+    std::uint32_t verts = 0, faces = 0;
+    std::memcpy(&verts, sizes.payload.data() + 0, 4);
+    std::memcpy(&faces, sizes.payload.data() + 4, 4);
+    REQUIRE(verts == 36u);
+    REQUIRE(faces == 12u);
+    // Remaining 120 bytes must be zero.
+    for (std::size_t i = 8; i < 128; ++i) REQUIRE(sizes.payload[i] == 0);
 }
 
 TEST_CASE("Vertex chunk uses 0x10007 with 144 bytes per vertex") {
     auto tree = build_alo(minimal_cube_scene());
-    const ChunkNode& submesh = tree[1].children[2];
-    const ChunkNode& geom    = submesh.children[2];
-    REQUIRE(geom.id == 0x10000);
-    // children: 0x10001 sizes, 0x10002 format name, 0x10007 verts, 0x10004 faces
-    REQUIRE(geom.children.size() == 4);
+    const ChunkNode& geom = tree[1].children[3];
     REQUIRE(geom.children[2].id == 0x10007);
     REQUIRE(geom.children[2].payload.size() == 36u * 144u);
 }
 
 TEST_CASE("Face chunk encodes 3 uint16 indices per triangle") {
     auto tree = build_alo(minimal_cube_scene());
-    const ChunkNode& geom = tree[1].children[2].children[2];
+    const ChunkNode& geom = tree[1].children[3];
     const ChunkNode& faces = geom.children[3];
     REQUIRE(faces.id == 0x10004);
-    REQUIRE(faces.payload.size() == 36u * 2u);  // 36 indices * 2 bytes each
+    REQUIRE(faces.payload.size() == 36u * 2u);
 }
 
 TEST_CASE("Connections section emits one 0x602 per mesh, all bound to bone 0") {
