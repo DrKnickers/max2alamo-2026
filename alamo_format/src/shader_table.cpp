@@ -9,10 +9,15 @@ namespace {
 using Kind = MaterialParam::Kind;
 
 // Convenience helpers so the table reads cleanly.
-constexpr ParamSpec F (std::string_view n, float a)                              { return {n, Kind::Float,   {a, 0, 0, 0}}; }
-constexpr ParamSpec V (std::string_view n, float a, float b, float c)            { return {n, Kind::Float4,  {a, b, c, 0}}; }
-constexpr ParamSpec V4(std::string_view n, float a, float b, float c, float d)   { return {n, Kind::Float4,  {a, b, c, d}}; }
-constexpr ParamSpec T (std::string_view n)                                       { return {n, Kind::Texture, {0, 0, 0, 0}}; }
+//
+// V()  declares a float3 param: the on-disk chunk is still a 16-byte FLOAT4
+//      but the 4th slot is forced to 0 at write time to match vanilla.
+// V4() declares a genuine float4 param (Colorization, UVOffset, Color,
+//      DebugColor) where the 4th slot carries actual data.
+constexpr ParamSpec F (std::string_view n, float a)                              { return {n, Kind::Float,   {a, 0, 0, 0}, false}; }
+constexpr ParamSpec V (std::string_view n, float a, float b, float c)            { return {n, Kind::Float4,  {a, b, c, 0}, true};  }
+constexpr ParamSpec V4(std::string_view n, float a, float b, float c, float d)   { return {n, Kind::Float4,  {a, b, c, d}, false}; }
+constexpr ParamSpec T (std::string_view n)                                       { return {n, Kind::Texture, {0, 0, 0, 0}, false}; }
 
 // Per-shader param templates. Defaults come from the PG .fxh headers;
 // vanilla content writes 4-element vectors even for parameters declared

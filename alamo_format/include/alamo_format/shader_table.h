@@ -26,10 +26,21 @@ namespace alamo_format::shader_table {
 // One static entry in the per-shader template list. `default_value4` is
 // used for Float and Float4 kinds; for Texture entries it is ignored
 // (writer omits the chunk when the source filename is empty).
+//
+// `is_float3` distinguishes float3-declared params (Emissive, Diffuse,
+// Specular...) from genuine float4-declared params (Colorization,
+// UVOffset, DebugColor, Color...). The on-disk chunk is the same 16-byte
+// FLOAT4 either way, but vanilla content writes 0.0 in the 4th slot for
+// float3 params (per PG's .fxh convention). Max's TYPE_FRGBA reads back
+// an AColor with alpha=1, so without this flag the walker would pass
+// through 1.0 — functionally invisible (the runtime shader only reads
+// .rgb) but a style divergence from vanilla. The writer zeros the 4th
+// slot when this flag is set.
 struct ParamSpec {
     std::string_view     name;
     MaterialParam::Kind  kind;
     std::array<float, 4> default_value4{0.f, 0.f, 0.f, 0.f};
+    bool                 is_float3 = false;
 };
 
 // Non-owning pointer + size pair -- a minimal std::span replacement so
