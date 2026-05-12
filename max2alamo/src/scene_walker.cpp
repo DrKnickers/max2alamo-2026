@@ -630,7 +630,14 @@ void log_material_diagnostics(Interface* /*max_interface*/, std::string& out_log
 {
     std::ostringstream os;
     os << "max2alamo material diagnostics\n"
-       << "==============================\n\n";
+       << "==============================\n\n"
+       // Coordinate-frame banner: max2alamo writes vertex positions,
+       // normals, tangents and bone matrices in Max's native frame with
+       // no axis remapping. EaW expects -Y as the model's forward axis
+       // (empirically confirmed: vanilla ships like the Executor SD have
+       // their engines at +Y and bow at -Y). Author with the model's
+       // nose pointing toward -Y and it will fly correctly in-game.
+       << "Coordinate frame: Z up, -Y forward, +X right (Max-native; matches EaW engine)\n\n";
 
     IGameScene* igame = GetIGameInterface();
     if (!igame) {
