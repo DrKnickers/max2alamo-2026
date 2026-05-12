@@ -14,10 +14,19 @@ ExportScene minimal_cube_scene()
 {
     ExportScene s = ExportScene::with_root_bone();
 
+    // Vanilla static-prop layout requires a per-mesh attachment bone in
+    // addition to the synthetic Root, otherwise Mike's importer crashes
+    // (he deletes Root on import; vertex bone references then dangle).
+    ExportBone mesh_bone;
+    mesh_bone.name         = "Cube";
+    mesh_bone.parent_index = 0;
+    s.bones.push_back(mesh_bone);
+
     ExportMesh mesh;
-    mesh.name = "Cube";
-    mesh.bbox_min = { -1.f, -1.f, -1.f };
-    mesh.bbox_max = {  1.f,  1.f,  1.f };
+    mesh.name       = "Cube";
+    mesh.bone_index = 1;   // points at the bone we just added
+    mesh.bbox_min   = { -1.f, -1.f, -1.f };
+    mesh.bbox_max   = {  1.f,  1.f,  1.f };
 
     ExportSubmesh sub;
     sub.material.shader_name  = "MeshAlpha.fx";
@@ -55,24 +64,35 @@ TEST_CASE("Skeleton info is exactly 128 bytes; first u32 is bone count") {
     REQUIRE(info.payload.size() == 128);
     std::uint32_t bone_count = 0;
     std::memcpy(&bone_count, info.payload.data(), 4);
-    REQUIRE(bone_count == 1);
-    // Remaining 124 bytes must be zero.
+    REQUIRE(bone_count == 2);   // Root + per-mesh attachment bone
     for (std::size_t i = 4; i < 128; ++i) {
         REQUIRE(info.payload[i] == 0);
     }
 }
 
-TEST_CASE("Bone container has 0x203 name + 0x206 data of 60 bytes") {
+TEST_CASE("Skeleton has Root + one named per-mesh bone") {
     auto tree = build_alo(minimal_cube_scene());
-    const ChunkNode& bone = tree[0].children[1];
-    REQUIRE(bone.id == 0x202);
-    REQUIRE(bone.children.size() == 2);
+    // children: 0x201 info, 0x202 Root, 0x202 Cube
+    REQUIRE(tree[0].children.size() == 3);
 
-    REQUIRE(bone.children[0].id == 0x203);
-    REQUIRE(bone.children[0].payload == std::vector<std::uint8_t>{'R', 'o', 'o', 't', 0});
+    // Root bone
+    const ChunkNode& root = tree[0].children[1];
+    REQUIRE(root.id == 0x202);
+    REQUIRE(root.children[0].id == 0x203);
+    REQUIRE(root.children[0].payload == std::vector<std::uint8_t>{'R', 'o', 'o', 't', 0});
+    REQUIRE(root.children[1].id == 0x206);
+    REQUIRE(root.children[1].payload.size() == 60);
 
-    REQUIRE(bone.children[1].id == 0x206);
-    REQUIRE(bone.children[1].payload.size() == 60);
+    // Per-mesh bone
+    const ChunkNode& mb = tree[0].children[2];
+    REQUIRE(mb.id == 0x202);
+    REQUIRE(mb.children[0].id == 0x203);
+    REQUIRE(mb.children[0].payload == std::vector<std::uint8_t>{'C', 'u', 'b', 'e', 0});
+    REQUIRE(mb.children[1].id == 0x206);
+    // Per-mesh bone has parent = 0 (Root); verify the first u32 of bone data.
+    std::uint32_t parent = 0;
+    std::memcpy(&parent, mb.children[1].payload.data(), 4);
+    REQUIRE(parent == 0u);
 }
 
 TEST_CASE("Mesh info is exactly 128 bytes; first u32 is material count") {
@@ -137,7 +157,7 @@ TEST_CASE("Face chunk encodes 3 uint16 indices per triangle") {
     REQUIRE(faces.payload.size() == 36u * 2u);
 }
 
-TEST_CASE("Connections section emits one 0x602 per mesh, all bound to bone 0") {
+TEST_CASE("Connections bind each mesh to its per-mesh attachment bone") {
     auto tree = build_alo(minimal_cube_scene());
     const ChunkNode& conns = tree[2];
     REQUIRE(conns.id == 0x600);
@@ -146,17 +166,28 @@ TEST_CASE("Connections section emits one 0x602 per mesh, all bound to bone 0") {
 
     const ChunkNode& obj = conns.children[1];
     REQUIRE(obj.id == 0x602);
-    // Mini-chunk 2 (object idx) at offset 0..6, then mini-chunk 3 (bone idx)
-    REQUIRE(obj.payload[0] == 2);  // mini ID
-    REQUIRE(obj.payload[1] == 4);  // payload size
+    REQUIRE(obj.payload[0] == 2);  // mini ID (object index)
+    REQUIRE(obj.payload[1] == 4);
     std::uint32_t obj_idx = 0;
     std::memcpy(&obj_idx, obj.payload.data() + 2, 4);
     REQUIRE(obj_idx == 0u);
-    REQUIRE(obj.payload[6] == 3);  // mini ID
-    REQUIRE(obj.payload[7] == 4);  // payload size
+    REQUIRE(obj.payload[6] == 3);  // mini ID (bone index)
+    REQUIRE(obj.payload[7] == 4);
     std::uint32_t bone_idx = 0;
     std::memcpy(&bone_idx, obj.payload.data() + 8, 4);
-    REQUIRE(bone_idx == 0u);
+    REQUIRE(bone_idx == 1u);   // per-mesh bone, NOT Root (which would be 0)
+}
+
+TEST_CASE("Vertex boneIdx[0] points at the mesh's per-mesh bone, not Root") {
+    auto tree = build_alo(minimal_cube_scene());
+    const ChunkNode& geom  = tree[1].children[3];
+    const ChunkNode& verts = geom.children[2];
+    REQUIRE(verts.id == 0x10007);
+    // boneIdx[4] sits at offset 112 in each 144-byte vertex (rev 2 layout).
+    // Read the first vertex's first bone slot.
+    std::uint32_t bone0 = 0;
+    std::memcpy(&bone0, verts.payload.data() + 112, 4);
+    REQUIRE(bone0 == 1u);   // attached to per-mesh bone
 }
 
 TEST_CASE("build_alo + write_chunk_tree + read_chunk_tree round-trips") {

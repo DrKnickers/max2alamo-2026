@@ -156,8 +156,14 @@ ChunkNode build_texture_param(const std::string& param_name,
 // One 144-byte vertex in the B4I4 rev-2 layout. Phase 4 fills only the
 // fields the format name references (pos / normal / uv0); the rest get
 // neutral defaults (zero UVs, zero tangent/binormal, white color, alpha=1,
-// bound to bone 0 with weight 1).
-void append_vertex(std::vector<std::uint8_t>& out, const ExportVertex& v) {
+// bound to `bone_index` with weight 1).
+//
+// `bone_index` is the file-side bone index (same scheme used by the
+// 0x602 connection chunk minus 1). For Phase 4 every vertex of a given
+// mesh shares the same bone -- no real skinning yet.
+void append_vertex(std::vector<std::uint8_t>& out, const ExportVertex& v,
+                   std::uint32_t bone_index)
+{
     // pos (12)
     append_f32(out, v.position[0]);
     append_f32(out, v.position[1]);
@@ -183,8 +189,11 @@ void append_vertex(std::vector<std::uint8_t>& out, const ExportVertex& v) {
     append_f32(out, 1.0f);
     // unused 16 (rev 2)
     append_zeros(out, 16);
-    // boneIdx[4] (16) -- bone 0 (Root)
-    for (int i = 0; i < 4; ++i) append_u32(out, 0u);
+    // boneIdx[4] (16) -- bone_index in slot 0, then padding zeros.
+    // Slot 0 carries the only meaningful bone for Phase 4; multi-bone
+    // skinning fills slots 1..3 in Phase 5.
+    append_u32(out, bone_index);
+    for (int i = 1; i < 4; ++i) append_u32(out, 0u);
     // weight[4] (16) -- [1, 0, 0, 0]
     append_f32(out, 1.0f);
     append_f32(out, 0.0f);
@@ -192,10 +201,12 @@ void append_vertex(std::vector<std::uint8_t>& out, const ExportVertex& v) {
     append_f32(out, 0.0f);
 }
 
-ChunkNode build_vertex_chunk(const std::vector<ExportVertex>& verts) {
+ChunkNode build_vertex_chunk(const std::vector<ExportVertex>& verts,
+                             std::uint32_t bone_index)
+{
     std::vector<std::uint8_t> p;
     p.reserve(verts.size() * kBytesPerVertex);
-    for (const auto& v : verts) append_vertex(p, v);
+    for (const auto& v : verts) append_vertex(p, v, bone_index);
     return make_leaf(kVertexChunkId, std::move(p));
 }
 
@@ -233,8 +244,10 @@ ChunkNode build_submesh_material(const ExportSubmesh& sub) {
 }
 
 // 0x10000 (Submesh data): sizes + format + vertices + faces. Sibling of
-// 0x10100 above.
-ChunkNode build_submesh_geometry(const ExportSubmesh& sub) {
+// 0x10100 above. `bone_index` is the file-side bone index that every
+// vertex's boneIdx[0] will point at.
+ChunkNode build_submesh_geometry(const ExportSubmesh& sub, std::uint32_t bone_index)
+{
     std::vector<ChunkNode> kids;
 
     // 0x10001: fixed 128 bytes -- u32 vertexCount, u32 faceCount, then 120
@@ -258,7 +271,7 @@ ChunkNode build_submesh_geometry(const ExportSubmesh& sub) {
     }
 
     // 0x10007: vertex data (144 B/vertex).
-    kids.push_back(build_vertex_chunk(sub.vertices));
+    kids.push_back(build_vertex_chunk(sub.vertices, bone_index));
 
     // 0x10004: face indices (3 x uint16 per triangle).
     kids.push_back(build_face_chunk(sub.indices));
@@ -280,7 +293,7 @@ ChunkNode build_mesh(const ExportMesh& mesh) {
     // SIBLINGS at this level, alternating per submesh. NOT nested.
     for (const auto& sub : mesh.submeshes) {
         kids.push_back(build_submesh_material(sub));
-        kids.push_back(build_submesh_geometry(sub));
+        kids.push_back(build_submesh_geometry(sub, mesh.bone_index));
     }
     return make_container(0x400, std::move(kids));
 }
@@ -306,7 +319,8 @@ ChunkNode build_connections(const ExportScene& scene) {
 
     // 0x602: per-object connection. Object index = position in
     // (meshes ++ lights). Phase 4 has no lights, so it's just the
-    // mesh index. Bone index = 0 (Root) for every Phase 4 mesh.
+    // mesh index. Bone index comes from mesh.bone_index (set by the
+    // walker to the per-mesh attachment bone, never 0=Root).
     for (std::size_t i = 0; i < scene.meshes.size(); ++i) {
         std::vector<std::uint8_t> p;
         // mini 2: object index.
@@ -316,7 +330,7 @@ ChunkNode build_connections(const ExportScene& scene) {
         // mini 3: bone index.
         p.push_back(kConnObjectBoneMini);
         p.push_back(4);
-        append_u32(p, 0u);
+        append_u32(p, scene.meshes[i].bone_index);
         kids.push_back(make_leaf(0x602, std::move(p)));
     }
 
