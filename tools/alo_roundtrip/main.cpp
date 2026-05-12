@@ -7,6 +7,7 @@
 #include <cstdlib>
 
 int main(int argc, char** argv) {
+    (void)argv;
     if (argc < 2) {
         std::fprintf(stderr, "usage: alo_roundtrip <file.alo>\n");
         return EXIT_FAILURE;

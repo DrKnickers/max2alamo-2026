@@ -127,8 +127,8 @@ void decode_known_leaf(const ChunkHeader& h, const std::uint8_t* data, int depth
         switch (h.id) {
             case 0x201: {
                 std::uint32_t bone_count = r.read_u32();
-                std::printf(". boneCount=%u, then %zu reserved bytes\n",
-                            bone_count, h.payload_size - 4);
+                std::printf(". boneCount=%u, then %u reserved bytes\n",
+                            bone_count, h.payload_size - 4u);
                 break;
             }
             case 0x203: {
@@ -154,9 +154,16 @@ void decode_known_leaf(const ChunkHeader& h, const std::uint8_t* data, int depth
                 std::printf(". \"%s\"\n", r.read_cstring().c_str());
                 break;
             case 0x402: {
+                // Layout (per AloImporter-1.2/3dsmax9/alamo2max.ms:546-550):
+                //   u32 materialCount, 7 floats (bbox + unused),
+                //   u32 isHidden, u32 isCollisionMesh, [88 bytes reserved]
                 std::uint32_t mat_count = r.read_u32();
-                std::printf(". materialCount=%u (bbox/flags omitted, payload=%u B)\n",
-                            mat_count, h.payload_size);
+                r.skip(7 * 4);
+                std::uint32_t hidden = r.read_u32();
+                std::uint32_t collision = r.read_u32();
+                std::printf(". materialCount=%u hidden=%u collision=%u (bbox + %zu reserved bytes omitted)\n",
+                            mat_count, hidden, collision,
+                            static_cast<std::size_t>(h.payload_size) - 40);
                 break;
             }
             case 0x10001: {
@@ -231,6 +238,10 @@ int main(int argc, char** argv) {
     try {
         auto data = read_file(opts.path);
         std::printf("%s  (%zu bytes)\n", opts.path.c_str(), data.size());
+        if (data.empty()) {
+            std::fprintf(stderr, "alo_dump: file is empty (no chunks)\n");
+            return EXIT_FAILURE;
+        }
         ChunkReader top(data.data(), data.size());
         walk(top, 0, opts, data.data());
     } catch (const std::exception& e) {
