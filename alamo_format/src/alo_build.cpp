@@ -19,9 +19,13 @@ constexpr const char* kVertexFormatName = "alD3dVertNU2";
 constexpr std::uint32_t kVertexChunkId = 0x10007;
 constexpr std::size_t   kBytesPerVertex = 144;  // B4I4 rev 2 layout
 
-// Fixed-size chunks documented in format-notes.md.
+// Fixed-size chunks documented in format-notes.md (and discovered the hard
+// way by comparing our output to vanilla content in Phase 4c -- some of
+// these aren't called out in the spec but are constant across all vanilla
+// files in the corpus).
 constexpr std::size_t kSkeletonInfoBytes = 128;   // 0x201
 constexpr std::size_t kMeshInfoBytes     = 128;   // 0x402
+constexpr std::size_t kSubmeshSizesBytes = 128;   // 0x10001
 constexpr std::size_t kBoneDataBytes     = 60;    // 0x205 / 0x206
 
 // Material parameter mini-chunk IDs.
@@ -207,14 +211,42 @@ ChunkNode build_face_chunk(const std::vector<std::uint32_t>& indices) {
     return make_leaf(0x10004, std::move(p));
 }
 
-ChunkNode build_geometry(const ExportSubmesh& sub) {
+// 0x10100 (Submesh material): shader name + optional shader-param chunks.
+// Crucially, this does NOT contain the geometry -- 0x10000 is a SIBLING of
+// 0x10100 inside the parent 0x400, not a child. Mike's MAXScript reader
+// (ReadMaterial in alamo2max.ms) confirms this by walking 0x10100's
+// children for params via Next() until -1, then reading 0x10000 at the
+// next sibling level. Vanilla content (e.g. I_DEATHSTAR_SWITCH.ALO,
+// W_SUN00.ALO) follows this layout exactly.
+ChunkNode build_submesh_material(const ExportSubmesh& sub) {
+    std::vector<ChunkNode> kids;
+    // 0x10101: shader name.
+    std::vector<std::uint8_t> shader_name;
+    append_cstring(shader_name, sub.material.shader_name);
+    kids.push_back(make_leaf(0x10101, std::move(shader_name)));
+
+    // Optional 0x10105 BaseTexture if a texture was extracted.
+    if (!sub.material.base_texture.empty()) {
+        kids.push_back(build_texture_param("BaseTexture", sub.material.base_texture));
+    }
+    return make_container(0x10100, std::move(kids));
+}
+
+// 0x10000 (Submesh data): sizes + format + vertices + faces. Sibling of
+// 0x10100 above.
+ChunkNode build_submesh_geometry(const ExportSubmesh& sub) {
     std::vector<ChunkNode> kids;
 
-    // 0x10001: u32 vertexCount, u32 faceCount.
+    // 0x10001: fixed 128 bytes -- u32 vertexCount, u32 faceCount, then 120
+    // reserved zero bytes. Mike's reader only consumes the first 8 bytes
+    // and skips the rest, but the chunk size is constant in vanilla
+    // content and AloViewer rejects shorter ones.
     {
         std::vector<std::uint8_t> p;
+        p.reserve(kSubmeshSizesBytes);
         append_u32(p, static_cast<std::uint32_t>(sub.vertices.size()));
         append_u32(p, static_cast<std::uint32_t>(sub.indices.size() / 3));
+        append_zeros(p, kSubmeshSizesBytes - 8);
         kids.push_back(make_leaf(0x10001, std::move(p)));
     }
 
@@ -234,24 +266,6 @@ ChunkNode build_geometry(const ExportSubmesh& sub) {
     return make_container(0x10000, std::move(kids));
 }
 
-ChunkNode build_submesh(const ExportSubmesh& sub) {
-    std::vector<ChunkNode> kids;
-    // 0x10101: shader name.
-    std::vector<std::uint8_t> shader_name;
-    append_cstring(shader_name, sub.material.shader_name);
-    kids.push_back(make_leaf(0x10101, std::move(shader_name)));
-
-    // Optional 0x10105 BaseTexture if a texture was extracted.
-    if (!sub.material.base_texture.empty()) {
-        kids.push_back(build_texture_param("BaseTexture", sub.material.base_texture));
-    }
-
-    // 0x10000 geometry container.
-    kids.push_back(build_geometry(sub));
-
-    return make_container(0x10100, std::move(kids));
-}
-
 ChunkNode build_mesh(const ExportMesh& mesh) {
     std::vector<ChunkNode> kids;
     // 0x401: name.
@@ -262,9 +276,11 @@ ChunkNode build_mesh(const ExportMesh& mesh) {
     }
     // 0x402: metadata.
     kids.push_back(build_mesh_info(mesh));
-    // Per-submesh 0x10100.
+    // Per-submesh: 0x10100 (material) and 0x10000 (geometry) appear as
+    // SIBLINGS at this level, alternating per submesh. NOT nested.
     for (const auto& sub : mesh.submeshes) {
-        kids.push_back(build_submesh(sub));
+        kids.push_back(build_submesh_material(sub));
+        kids.push_back(build_submesh_geometry(sub));
     }
     return make_container(0x400, std::move(kids));
 }
