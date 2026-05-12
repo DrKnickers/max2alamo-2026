@@ -43,6 +43,18 @@ std::string basename(const std::string& path)
     return (pos == std::string::npos) ? path : path.substr(pos + 1);
 }
 
+// Read a string user-property from a Max INode. Returns the value (UTF-8)
+// if the property exists, otherwise empty string.
+std::string read_node_user_prop(INode* node, const TCHAR* key)
+{
+    if (!node || !key) return {};
+    MSTR key_mstr(key);
+    MSTR value;
+    if (!node->GetUserPropString(key_mstr, value)) return {};
+    if (value.length() == 0) return {};
+    return to_utf8(value.data());
+}
+
 // If `mat` is a DirectX Shader material, return its IDxMaterial interface
 // (or one of the newer revisions). Returns nullptr for any other material.
 IDxMaterial* as_dx_material(Mtl* mat)
@@ -57,8 +69,17 @@ IDxMaterial* as_dx_material(Mtl* mat)
 struct ExtractedMaterial {
     std::string shader_name;   // e.g. "MeshAlpha.fx" (Standard) or the .fx filename (DXMaterial)
     std::string base_texture;  // diffuse / first-non-empty bitmap, basename only
-    std::string source_kind;   // "Standard", "DXMaterial", "Multi", "Other" -- used in diagnostics
+    std::string source_kind;   // diagnostic tag -- "Standard", "DXMaterial", "Multi -> ...",
+                               // "UserProp(Alamo_Shader_Name)+Standard", etc.
 };
+
+// Node-level user property name. If set on a mesh node, its value
+// overrides whatever shader name we'd otherwise pick from the material.
+// This is the practical workaround for Max 2026's DirectX Shader
+// material being unable to compile EaW's DX9-era HLSL: users put a
+// plain Standard material on the mesh for the texture, then add this
+// user property to choose the actual Alamo shader.
+constexpr const TCHAR* kShaderOverrideKey = _T("Alamo_Shader_Name");
 
 // Inspect a Max material and figure out what shader / texture pair best
 // represents it for Phase 4 export. Decision tree:
@@ -153,6 +174,15 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh, alamo_format::ExportMesh& out
     // recursing one level into Multi/Sub-Object. Full per-face matID
     // buckets are a later phase.
     ExtractedMaterial em = extract_material(node->GetNodeMaterial());
+    // Node-level shader-name override (Alamo_Shader_Name user property).
+    // Wins over whatever the material reported -- needed because Max 2026
+    // can't compile EaW's DX9 .fx files via DXMaterial, so users author
+    // with Standard materials and pick the shader by user property.
+    INode* inode = node->GetMaxNode();
+    if (std::string ovr = read_node_user_prop(inode, kShaderOverrideKey); !ovr.empty()) {
+        em.shader_name = std::move(ovr);
+        em.source_kind = "UserProp(Alamo_Shader_Name) + " + em.source_kind;
+    }
     alamo_format::ExportSubmesh sub;
     sub.material.shader_name  = std::move(em.shader_name);
     sub.material.base_texture = std::move(em.base_texture);
@@ -316,6 +346,19 @@ void log_node_material(IGameNode* node, std::ostringstream& os)
     }
 
     ExtractedMaterial em = extract_material(gmat);
+
+    // Surface any node-level shader-name override and apply it to the
+    // diagnostic the same way build_mesh applies it to the export.
+    INode* inode = node->GetMaxNode();
+    std::string ovr = read_node_user_prop(inode, kShaderOverrideKey);
+    if (!ovr.empty()) {
+        os << "  Alamo_Shader_Name user property: \"" << ovr << "\" (overrides material)\n";
+        em.shader_name = ovr;
+        em.source_kind = "UserProp(Alamo_Shader_Name) + " + em.source_kind;
+    } else {
+        os << "  Alamo_Shader_Name user property: (not set)\n";
+    }
+
     os << "  -> chosen for export:\n"
        << "       shader_name  = \"" << em.shader_name << "\"\n"
        << "       base_texture = \"" << em.base_texture << "\"\n"
