@@ -33,7 +33,8 @@ Single-file project status + history. Open this first when picking up a new sess
 | 5b | Single-bone skinning via IGameSkin | ✅ shipped | [PR #25](https://github.com/DrKnickers/max2alamo-2026/pull/25) — skinned cylinder exports with per-vertex dominant-bone refs; connects to Root |
 | 5c | Multi-bone weighted skinning | ✅ shipped | smooth-painted joint splits 50/50 between flanking bones with weights summing to 1.0; verified by `test_smooth_skinned_joint.ms` |
 | 5d | `Alamo_*` user-property family — simple flag reads | ✅ shipped | Walker reads `Alamo_Export_Geometry` (opt-out), `Alamo_Geometry_Hidden`, `Alamo_Collision_Enabled`, `Alamo_Billboard_Mode`; verified by `test_alamo_user_props.ms` |
-| 5e | `Alamo_*` user-property family — helpers-as-bones + extra-bone + LOD/Alt | ⏭ next | `Alamo_Export_Transform` on a Helper exports it as a bone; `Alamo_Is_Extra_Bone`, `Alamo_LOD`, `Alamo_Alt` semantics resolved |
+| 5e | `Alamo_*` user-property family — helpers-as-bones | ✅ shipped | `IGAME_HELPER` nodes with `Alamo_Export_Transform=true` join the skeleton as bones; verified by `test_helper_as_bone.ms` |
+| 5f | `Alamo_*` user-property family — extra-bone + LOD/Alt | ⏭ next | `Alamo_Is_Extra_Bone`, `Alamo_LOD`, `Alamo_Alt`, `Alamo_Alt_Decrease_Stay_Hidden` semantics resolved |
 | Utility UI | Faithful clone of the legacy PG Alamo Utility panel | ✅ shipped | Three rollouts (Node Export Options / Quick Selection / Animation Settings) appear under Utilities > More... > Alamo Utility; checkboxes/radios round-trip Alamo_* user properties on the selected node |
 | 6a | Effects11 shader stubs for Max 2026 | ✅ shipped | [PR #18](https://github.com/DrKnickers/max2alamo-2026/pull/18) — all 39 PG shaders load in Max 2026's DXSM with PG parameter UIs |
 | 6b | Per-vertex tangent + binormal export | ✅ shipped | [PR #19](https://github.com/DrKnickers/max2alamo-2026/pull/19) — MikkT via `IGameMesh::GetFaceVertexTangentBinormal`; bump shading works |
@@ -308,6 +309,7 @@ Current coverage (6 tests, all green):
 | `test_skinned_rskin` | Integration: 5a + 5b + 6a + 6c all firing on one mesh with `RSkinBumpColorize.fx` |
 | `test_smooth_skinned_joint` | Phase 5c multi-bone weighted skinning (smooth-painted joint, 50/50 split, normalized) |
 | `test_alamo_user_props` | Phase 5d `Alamo_*` user-prop round-trip (export-geometry opt-out, hidden, collision, billboard mode) |
+| `test_helper_as_bone` | Phase 5e helpers-as-bones (`Alamo_Export_Transform` on a Dummy promotes it to a skeleton bone; unmarked helpers stay scene-only) |
 
 The harness is **not CI-runnable** (needs Max install + license seat). It's an on-demand local tool; CI keeps the format-library tests.
 
@@ -394,14 +396,23 @@ Verifier extension: `_alo.py`'s `Mesh` dataclass gained `is_hidden` + `is_collis
 
 `test_alamo_user_props.ms` regression: four boxes, one per code path — `PlainBox` (no props, all defaults), `HiddenColl` (both flags true), `BillboardFace` (mode=2), `SkippedMesh` (Export_Geometry=false). Verifier checks each round-trip end-to-end through the walker.
 
-### Phase 5e — `Alamo_*` user-property family, architectural half (next)
+### Phase 5e — helpers-as-bones (shipped)
 
-The harder reads, each of which needs new walker logic rather than a 1:1 field copy:
+`is_exportable_bone` now accepts `IGAME_HELPER` nodes (Dummy / Point / Arrow) in addition to `IGAME_BONE`, gated on the `Alamo_Export_Transform` user property. Opt-in by design: real Max bones still auto-export (preserving the corpus contract from Phase 5a), but helpers only get promoted to the skeleton when the modder explicitly marks them — most scenes have helpers that aren't meant to ship (look-at targets, authoring rigs, reference markers).
 
-- **`Alamo_Export_Transform` on a Helper / Dummy / Point** → treat that node as an exportable bone, complementing the `IGAME_BONE` detection that's been in place since 5a. Requires extending `is_exportable_bone` and threading helper-as-bone matrices through `walk_bones`.
-- **`Alamo_Is_Extra_Bone`** → format-research first; the legacy plugin emitted these as a distinct skeleton sub-class (likely tied to billboarding or animation-only bones that don't receive geometry attachments).
-- **`Alamo_Alt_Decrease_Stay_Hidden`** → semantics need confirming against vanilla content before wiring.
-- **`Alamo_LOD` / `Alamo_Alt`** → these affect file-level naming / variant-selection rather than per-node fields; needs design before code.
+All the existing 5a plumbing (local-to-parent matrices via `GetLocalTM`, parent-index propagation, the `bone_map` for skin resolution) works unchanged because the relevant `IGameNode` methods are type-agnostic. The walker change is a single switch in `is_exportable_bone` plus a new property-key constant.
+
+Helper nodes that the user doesn't opt in stay scene-only — their children, including real bones, still get correct `parent_index` values because `walk_bones` already does "nearest exportable-ancestor" tracking (Phase 5a).
+
+`test_helper_as_bone` regression: one Dummy with `Alamo_Export_Transform=true` (appears in skeleton with its position preserved as the local-TM translation), one Dummy with no prop (absent from skeleton), one static Box (exports normally — proves the helper pass doesn't disturb the mesh path).
+
+### Phase 5f — extra-bone + LOD/Alt (next)
+
+The remaining `Alamo_*` reads each need a chunk of format research before the walker change, hence deferring them to their own sub-phases:
+
+- **`Alamo_Is_Extra_Bone`** → the legacy plugin likely emitted these as a distinct skeleton sub-class (animation-only bones, billboard parents, etc.). Need to identify the on-disk distinction in vanilla content before wiring.
+- **`Alamo_Alt_Decrease_Stay_Hidden`** → semantics unclear from naming alone; needs vanilla-corpus inspection to confirm what bit this drives.
+- **`Alamo_LOD` / `Alamo_Alt`** → likely affect file-level naming / variant-selection rather than per-node fields (the Utility panel's Quick Selection rollout filters by these). Design pass needed before code.
 
 ### Phase 6e (optional polish) — Walker-side `.export.log` consistency
 
