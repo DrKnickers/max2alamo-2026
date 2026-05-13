@@ -91,6 +91,7 @@ Wiki / Discussions / Projects are disabled.
 | Max-side test harness | `tests/maxscript/test_*.ms` scenes + `tests/maxscript/verify/verify_test_*.py` assertions + `tests/maxscript/verify/_alo.py` parser library |
 | Max-side test runner | `scripts/run-max-tests.ps1` (dispatches `3dsmaxbatch.exe` per test, runs paired Python verifier) |
 | Effects11 shader stubs | `shaders/max-preview/*.fx` (39 files, regenerated from a manifest by `scripts/generate-max-preview-stubs.py`) |
+| Corpus-sweep validator runner | `scripts/sweep_corpus_validator.py` (loose-mode Tier 1 against every file in `tests/corpus/`; calibration check that the validator hasn't drifted from PG-shipped content) |
 | Tangent diagnostic tools | `scripts/compare-tangents.py` / `scripts/dump-tangents.py` (one-shot research scripts used to settle the MikkT vs vanilla decision) |
 | Format spec (working ref) | `docs/format-notes.md` |
 | Build instructions | `docs/build.md` |
