@@ -1,5 +1,7 @@
 #include "alamo_proxy_helper.h"
 
+#include "../resources/utility_resource.h"
+
 #include <Max.h>
 #include <maxapi.h>
 #include <object.h>
@@ -12,6 +14,12 @@ extern HINSTANCE g_h_instance;
 namespace max2alamo {
 
 namespace {
+
+// Property keys -- must stay byte-identical to the walker's
+// scene_walker.cpp constants so what the rollout writes is what the
+// walker reads at export time.
+const TCHAR* kPropGeometryHidden    = _T("Alamo_Geometry_Hidden");
+const TCHAR* kPropAltDecStayHidden  = _T("Alamo_Alt_Decrease_Stay_Hidden");
 
 // ---- Geometry of the on-screen marker -------------------------------------
 
@@ -84,10 +92,28 @@ public:
     IOResult Save(ISave* /*isave*/) override { return IO_OK; }
     IOResult Load(ILoad* /*iload*/) override { return IO_OK; }
 
+    // ----- Modify-panel rollout (Phase 7c.3) ----------------------------
+    void BeginEditParams(IObjParam* ip, ULONG flags, Animatable* prev) override;
+    void EndEditParams  (IObjParam* ip, ULONG flags, Animatable* next) override;
+
+    // The DLGPROC needs to reach the currently-edited node to read/write
+    // its user properties. Max's IObjParam only points at the underlying
+    // Object*, not the INode*, but the proxy can only be edited when
+    // it's the current selection -- so we ask for selection[0].
+    INode* SelectedNode() const;
+
 private:
     // Marker is a small wireframe pyramid in object space, pointing +Z.
     static void draw_marker(GraphicsWindow* gw, Matrix3& tm);
+
+    HWND        m_hRollout = nullptr;
+    IObjParam*  m_ip       = nullptr;
+
+    // Currently-edited helper, accessed from the DLGPROC via GWLP_USERDATA.
+    static AlamoProxyHelper* s_edit;
 };
+
+AlamoProxyHelper* AlamoProxyHelper::s_edit = nullptr;
 
 // ---- Marker drawing -------------------------------------------------------
 
@@ -213,6 +239,89 @@ static AlamoProxyCreateCallback g_create_cb;
 CreateMouseCallBack* AlamoProxyHelper::GetCreateMouseCallBack()
 {
     return &g_create_cb;
+}
+
+// ---- Modify-panel rollout -------------------------------------------------
+
+INode* AlamoProxyHelper::SelectedNode() const
+{
+    if (!m_ip) return nullptr;
+    if (m_ip->GetSelNodeCount() < 1) return nullptr;
+    return m_ip->GetSelNode(0);
+}
+
+static bool read_bool_prop(INode* node, const TCHAR* key, bool dflt)
+{
+    if (!node) return dflt;
+    BOOL v = dflt ? TRUE : FALSE;
+    if (node->GetUserPropBool(const_cast<TCHAR*>(key), v)) return v != FALSE;
+    return dflt;
+}
+
+static INT_PTR CALLBACK ProxyRolloutDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg) {
+    case WM_INITDIALOG: {
+        SetWindowLongPtr(hDlg, GWLP_USERDATA, lParam);
+        auto* helper = reinterpret_cast<AlamoProxyHelper*>(lParam);
+        if (helper) {
+            INode* node = helper->SelectedNode();
+            CheckDlgButton(hDlg, IDC_PROXY_HIDDEN,
+                           read_bool_prop(node, kPropGeometryHidden, false)
+                           ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(hDlg, IDC_PROXY_ALT_DEC_STAY_HIDDEN,
+                           read_bool_prop(node, kPropAltDecStayHidden, false)
+                           ? BST_CHECKED : BST_UNCHECKED);
+        }
+        return TRUE;
+    }
+    case WM_COMMAND: {
+        if (HIWORD(wParam) != BN_CLICKED) return FALSE;
+        auto* helper = reinterpret_cast<AlamoProxyHelper*>(
+            GetWindowLongPtr(hDlg, GWLP_USERDATA));
+        if (!helper) return FALSE;
+        INode* node = helper->SelectedNode();
+        if (!node) return FALSE;
+
+        const int id = LOWORD(wParam);
+        const bool checked = IsDlgButtonChecked(hDlg, id) == BST_CHECKED;
+        switch (id) {
+        case IDC_PROXY_HIDDEN:
+            node->SetUserPropBool(const_cast<TCHAR*>(kPropGeometryHidden),
+                                  checked ? TRUE : FALSE);
+            return TRUE;
+        case IDC_PROXY_ALT_DEC_STAY_HIDDEN:
+            node->SetUserPropBool(const_cast<TCHAR*>(kPropAltDecStayHidden),
+                                  checked ? TRUE : FALSE);
+            return TRUE;
+        }
+        return FALSE;
+    }
+    case WM_DESTROY:
+        return TRUE;
+    }
+    return FALSE;
+}
+
+void AlamoProxyHelper::BeginEditParams(IObjParam* ip, ULONG /*flags*/, Animatable* /*prev*/)
+{
+    m_ip = ip;
+    s_edit = this;
+    if (!ip) return;
+    m_hRollout = ip->AddRollupPage(
+        g_h_instance,
+        MAKEINTRESOURCE(IDD_ALAMO_PROXY_ROLLOUT),
+        ProxyRolloutDlgProc,
+        _T("Alamo Proxy"),
+        reinterpret_cast<LPARAM>(this));
+}
+
+void AlamoProxyHelper::EndEditParams(IObjParam* ip, ULONG /*flags*/, Animatable* /*next*/)
+{
+    if (ip && m_hRollout) ip->DeleteRollupPage(m_hRollout);
+    m_hRollout = nullptr;
+    m_ip = nullptr;
+    if (s_edit == this) s_edit = nullptr;
 }
 
 // ---- ClassDesc ------------------------------------------------------------
