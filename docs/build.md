@@ -86,9 +86,14 @@ GitHub Actions builds only the SDK-independent targets (`alamo_format`, `alo_dum
 
 Every plugin / walker / format-library change must pass the full export test pyramid before merge. Tiers 1–3 are automated by `scripts/run-max-tests.ps1`; Tier 4 is a manual checklist.
 
-### Tier 1 — Universal invariants (automated)
+### Tier 1 — Tier-1 invariants (automated, two modes)
 
-`tests/maxscript/verify/validate_alo.py` runs on every exported `.alo`, asserting structural rules every file must satisfy: Root sentinel, topologically-sorted bone parents, billboard mode in `[0, 7]`, mesh index/vertex consistency, unit-length normals/tangents, weights summing to 1.0, connection counts. Fails the test with a list of every violation it found, not just the first one.
+`tests/maxscript/verify/validate_alo.py` runs on every exported `.alo`. Two modes calibrated against different ground truths:
+
+- **Strict mode (default for harness exports)** — adds checks our walker output is supposed to satisfy: sub-1e-3 normal/tangent length, tangent perpendicularity `|dot(T,N)|<=0.15`, per-vertex weights sum to 1.0, non-negative weights. Vanilla content routinely violates these; our pipeline never does, so a violation in our output is a real regression.
+- **Loose mode** (`--loose`) — structural baseline only: bone parent topology, index/vertex consistency, name/billboard ranges, connection count = `(meshes + lights)`. Calibrated against the entire vanilla EaW+FoC corpus (2066/2066 files pass).
+
+Run `python scripts/sweep_corpus_validator.py` to confirm the loose-mode validator stays vanilla-compatible after walker / format changes. Every file in `tests/corpus/` should pass; if a vanilla file fails, the validator is too strict.
 
 ### Tier 2 — Writer round-trip (automated)
 
