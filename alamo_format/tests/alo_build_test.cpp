@@ -440,3 +440,282 @@ TEST_CASE("build_alo + write_chunk_tree + read_chunk_tree round-trips") {
     auto bytes2 = write_chunk_tree(reparsed);
     REQUIRE(bytes2 == bytes);
 }
+
+// ---- Phase 7a: lights -----------------------------------------------------
+
+namespace {
+ExportScene scene_with_one_omni_light()
+{
+    ExportScene s = ExportScene::with_root_bone();
+    // A synthetic per-light bone, mirroring the per-mesh-bone pattern.
+    ExportBone lb;
+    lb.name         = "Omni01";
+    lb.parent_index = 0;
+    s.bones.push_back(lb);
+
+    ExportLight light;
+    light.name        = "Omni01";
+    light.type        = ExportLight::Type::Omni;
+    light.color       = {0.8f, 0.6f, 0.2f};
+    light.intensity   = 1.5f;
+    light.atten_end   = 100.f;
+    light.atten_start = 30.f;
+    light.hotspot     = 0.f;   // unused for omni
+    light.falloff     = 0.f;
+    light.bone_index  = 1;
+    s.lights.push_back(std::move(light));
+    return s;
+}
+}  // namespace
+
+TEST_CASE("build_alo with a light slots 0x1300 between 0x400 meshes and 0x600 connections") {
+    auto s = scene_with_one_omni_light();
+    auto tree = build_alo(s);
+
+    // Layout: [0x200 skeleton] [0x1300 light] [0x600 connections].
+    // No meshes in this scene -- the light still slots between meshes
+    // (zero of them) and connections.
+    REQUIRE(tree.size() == 3);
+    REQUIRE(tree[0].id == 0x200);
+    REQUIRE(tree[1].id == 0x1300);
+    REQUIRE(tree[1].is_container);
+    REQUIRE(tree[2].id == 0x600);
+}
+
+TEST_CASE("0x1300 container has 0x1301 (name) + 0x1302 (36-byte data) children") {
+    auto tree = build_alo(scene_with_one_omni_light());
+    const ChunkNode& light = tree[1];
+    REQUIRE(light.children.size() == 2);
+
+    const ChunkNode& name_chunk = light.children[0];
+    REQUIRE(name_chunk.id == 0x1301);
+    REQUIRE_FALSE(name_chunk.is_container);
+    // Name "Omni01" + trailing NUL = 7 bytes.
+    REQUIRE(name_chunk.payload.size() == 7);
+
+    const ChunkNode& data_chunk = light.children[1];
+    REQUIRE(data_chunk.id == 0x1302);
+    REQUIRE_FALSE(data_chunk.is_container);
+    REQUIRE(data_chunk.payload.size() == 36);
+}
+
+TEST_CASE("0x1302 payload byte layout matches Mike Lankamp's reader (type, RGB, intensity, attenEnd, attenStart, hotspot, falloff)") {
+    auto tree = build_alo(scene_with_one_omni_light());
+    const auto& p = tree[1].children[1].payload;
+    REQUIRE(p.size() == 36);
+
+    std::uint32_t type;
+    std::memcpy(&type, p.data() + 0, 4);
+    REQUIRE(type == 0);  // Omni
+
+    float r, g, b;
+    std::memcpy(&r, p.data() + 4,  4);
+    std::memcpy(&g, p.data() + 8,  4);
+    std::memcpy(&b, p.data() + 12, 4);
+    REQUIRE(r == 0.8f);
+    REQUIRE(g == 0.6f);
+    REQUIRE(b == 0.2f);
+
+    float intensity, atten_end, atten_start, hotspot, falloff;
+    std::memcpy(&intensity,   p.data() + 16, 4);
+    std::memcpy(&atten_end,   p.data() + 20, 4);
+    std::memcpy(&atten_start, p.data() + 24, 4);
+    std::memcpy(&hotspot,     p.data() + 28, 4);
+    std::memcpy(&falloff,     p.data() + 32, 4);
+    REQUIRE(intensity   == 1.5f);
+    REQUIRE(atten_end   == 100.f);
+    REQUIRE(atten_start == 30.f);
+    REQUIRE(hotspot     == 0.f);
+    REQUIRE(falloff     == 0.f);
+}
+
+TEST_CASE("Spotlight type is 2; directional is 1") {
+    ExportScene s = ExportScene::with_root_bone();
+    ExportBone bone; bone.name = "Spot"; bone.parent_index = 0; s.bones.push_back(bone);
+
+    ExportLight spot;
+    spot.name = "Spot"; spot.type = ExportLight::Type::Spotlight;
+    spot.hotspot = 0.5f; spot.falloff = 0.8f; spot.bone_index = 1;
+    s.lights.push_back(spot);
+
+    auto tree = build_alo(s);
+    const auto& payload = tree[1].children[1].payload;
+    std::uint32_t type;
+    std::memcpy(&type, payload.data(), 4);
+    REQUIRE(type == 2);
+
+    // Directional check via a second scene.
+    ExportScene s2 = ExportScene::with_root_bone();
+    ExportBone db; db.name = "Dir"; db.parent_index = 0; s2.bones.push_back(db);
+    ExportLight dir;
+    dir.name = "Dir"; dir.type = ExportLight::Type::Directional; dir.bone_index = 1;
+    s2.lights.push_back(dir);
+    auto tree2 = build_alo(s2);
+    std::memcpy(&type, tree2[1].children[1].payload.data(), 4);
+    REQUIRE(type == 1);
+}
+
+// ---- Phase 7a: proxies ----------------------------------------------------
+
+TEST_CASE("build_proxy emits 0x603 leaf with required mini-chunks 5 (name) + 6 (bone), no others when defaults") {
+    ExportScene s = ExportScene::with_root_bone();
+    ExportBone pb; pb.name = "p_smoke"; pb.parent_index = 0; s.bones.push_back(pb);
+    ExportProxy proxy;
+    proxy.name = "p_smoke";
+    proxy.bone_index = 1;
+    s.proxies.push_back(proxy);
+
+    auto tree = build_alo(s);
+    // [0x200] [0x600 connections (with one 0x603 inside)]
+    REQUIRE(tree.size() == 2);
+    const ChunkNode& connections = tree[1];
+    REQUIRE(connections.id == 0x600);
+    // children: [0x601 counts] [0x603 proxy]. No meshes / lights so
+    // there are no 0x602 entries.
+    REQUIRE(connections.children.size() == 2);
+    REQUIRE(connections.children[0].id == 0x601);
+    REQUIRE(connections.children[1].id == 0x603);
+
+    // 0x603 payload layout: mini 5 (name) + mini 6 (bone). Nothing else
+    // because is_hidden and alt_decrease_stay_hidden default-false.
+    const auto& p = connections.children[1].payload;
+    //   [t=5][sz=8]"p_smoke\0"  [t=6][sz=4][bone_u32]
+    REQUIRE(p.size() == 2 + 8 + 2 + 4);
+    REQUIRE(p[0] == 5);
+    REQUIRE(p[1] == 8);
+    REQUIRE(std::string(reinterpret_cast<const char*>(p.data() + 2)) == "p_smoke");
+    REQUIRE(p[10] == 6);
+    REQUIRE(p[11] == 4);
+    std::uint32_t bone_idx;
+    std::memcpy(&bone_idx, p.data() + 12, 4);
+    REQUIRE(bone_idx == 1);
+}
+
+TEST_CASE("build_proxy includes mini-chunks 7 and 8 only when their flags are set") {
+    ExportScene s = ExportScene::with_root_bone();
+    ExportBone pb; pb.name = "p_fx"; pb.parent_index = 0; s.bones.push_back(pb);
+    ExportProxy proxy;
+    proxy.name = "p_fx";
+    proxy.bone_index = 1;
+    proxy.is_hidden = true;
+    proxy.alt_decrease_stay_hidden = true;
+    s.proxies.push_back(proxy);
+
+    auto tree = build_alo(s);
+    const auto& p = tree[1].children[1].payload;
+    // [5][5]"p_fx\0" [6][4][bone] [7][4][1] [8][4][1]
+    REQUIRE(p.size() == (2 + 5) + (2 + 4) + (2 + 4) + (2 + 4));
+
+    // Scan for the optional mini-chunks. Easier than computing offsets
+    // by hand for every test variant.
+    bool saw_hidden = false, saw_alt = false;
+    std::size_t off = 0;
+    while (off + 2 <= p.size()) {
+        std::uint8_t t = p[off];
+        std::uint8_t sz = p[off + 1];
+        if (t == 7) {
+            saw_hidden = true;
+            std::uint32_t v;
+            std::memcpy(&v, p.data() + off + 2, 4);
+            REQUIRE(v == 1u);
+        }
+        if (t == 8) {
+            saw_alt = true;
+            std::uint32_t v;
+            std::memcpy(&v, p.data() + off + 2, 4);
+            REQUIRE(v == 1u);
+        }
+        off += 2 + sz;
+    }
+    REQUIRE(saw_hidden);
+    REQUIRE(saw_alt);
+}
+
+// ---- Phase 7a: connections cover meshes + lights + proxies ----------------
+
+TEST_CASE("0x601 counts reflect (mesh+light) connection count and proxy count") {
+    ExportScene s = minimal_cube_scene();   // 1 mesh + its bone
+    // Add a light at the end.
+    ExportBone lb; lb.name = "Omni"; lb.parent_index = 0; s.bones.push_back(lb);
+    ExportLight light;
+    light.name = "Omni"; light.bone_index = 2;
+    s.lights.push_back(light);
+    // And two proxies.
+    ExportBone pb1; pb1.name = "p_a"; pb1.parent_index = 0; s.bones.push_back(pb1);
+    ExportBone pb2; pb2.name = "p_b"; pb2.parent_index = 0; s.bones.push_back(pb2);
+    ExportProxy pa; pa.name = "p_a"; pa.bone_index = 3; s.proxies.push_back(pa);
+    ExportProxy pb; pb.name = "p_b"; pb.bone_index = 4; s.proxies.push_back(pb);
+
+    auto tree = build_alo(s);
+    // [0x200] [0x400 mesh] [0x1300 light] [0x600 connections]
+    REQUIRE(tree.size() == 4);
+    const ChunkNode& connections = tree[3];
+
+    // 0x601 is the first child of 0x600. Its mini-chunks are
+    // [t=1][sz=4][nConn=2] [t=4][sz=4][nProxy=2].
+    const auto& counts = connections.children[0];
+    REQUIRE(counts.id == 0x601);
+    REQUIRE(counts.payload.size() == 12);
+    std::uint32_t n_conn, n_prox;
+    std::memcpy(&n_conn, counts.payload.data() + 2, 4);
+    std::memcpy(&n_prox, counts.payload.data() + 8, 4);
+    REQUIRE(n_conn == 2);  // 1 mesh + 1 light
+    REQUIRE(n_prox == 2);
+}
+
+TEST_CASE("0x602 object indices are monotonically increasing 0,1,2,... (mesh-then-light order)") {
+    // Two meshes + one light -> object indices 0, 1, 2.
+    ExportScene s = ExportScene::with_root_bone();
+    for (int i = 0; i < 2; ++i) {
+        ExportBone b; b.name = "m" + std::to_string(i); b.parent_index = 0;
+        s.bones.push_back(b);
+        ExportMesh m; m.name = "m" + std::to_string(i);
+        m.bone_index = static_cast<std::uint32_t>(s.bones.size() - 1);
+        ExportSubmesh sub; sub.material.shader_name = "MeshAlpha.fx";
+        ExportVertex v;
+        v.bone_indices = {m.bone_index, 0u, 0u, 0u};
+        sub.vertices.push_back(v); sub.indices.push_back(0);
+        m.submeshes.push_back(std::move(sub));
+        s.meshes.push_back(std::move(m));
+    }
+    ExportBone lb; lb.name = "L"; lb.parent_index = 0; s.bones.push_back(lb);
+    ExportLight light; light.name = "L";
+    light.bone_index = static_cast<std::uint32_t>(s.bones.size() - 1);
+    s.lights.push_back(light);
+
+    auto tree = build_alo(s);
+    // tree[-1] is the connections container.
+    const ChunkNode& connections = tree.back();
+    REQUIRE(connections.id == 0x600);
+    // children: [0x601 counts] then 3 × 0x602.
+    REQUIRE(connections.children.size() == 4);
+
+    for (std::uint32_t i = 0; i < 3; ++i) {
+        const ChunkNode& conn = connections.children[1 + i];
+        REQUIRE(conn.id == 0x602);
+        // Payload: [t=2][sz=4][object_idx] [t=3][sz=4][bone_idx]
+        REQUIRE(conn.payload.size() == 12);
+        REQUIRE(conn.payload[0] == 2);
+        std::uint32_t obj_idx;
+        std::memcpy(&obj_idx, conn.payload.data() + 2, 4);
+        REQUIRE(obj_idx == i);  // monotonic
+    }
+}
+
+TEST_CASE("Mixed scene (mesh + light + proxy) round-trips byte-identical via write/read") {
+    ExportScene s = minimal_cube_scene();
+    ExportBone lb; lb.name = "Omni"; lb.parent_index = 0; s.bones.push_back(lb);
+    ExportLight light;
+    light.name = "Omni"; light.intensity = 2.f; light.bone_index = 2;
+    s.lights.push_back(light);
+    ExportBone pb; pb.name = "p_fx"; pb.parent_index = 0; s.bones.push_back(pb);
+    ExportProxy proxy;
+    proxy.name = "p_fx"; proxy.bone_index = 3; proxy.is_hidden = true;
+    s.proxies.push_back(proxy);
+
+    auto tree = build_alo(s);
+    auto bytes = write_chunk_tree(tree);
+    auto reparsed = read_chunk_tree(bytes.data(), bytes.size());
+    auto bytes2 = write_chunk_tree(reparsed);
+    REQUIRE(bytes2 == bytes);
+}

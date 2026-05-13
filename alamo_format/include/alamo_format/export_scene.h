@@ -145,14 +145,60 @@ struct ExportBone {
                                        0.f, 0.f, 1.f, 0.f};
 };
 
+// Phase 7a: 0x1300 light. A light is a "first-class connection object"
+// in the .alo (it gets a 0x602 connection entry alongside meshes,
+// indexed in (meshes ++ lights) order). Spotlight orientation is
+// implicit: vanilla content emits the FreeSpot's bone PLUS a sibling
+// '<name>.Target' bone, and the engine reconstructs direction from
+// the two positions -- there is no explicit axis vector in 0x1302.
+struct ExportLight {
+    // On-disk type values from Mike Lankamp's alamo2max.ms enum:
+    //   0 = OMNI, 1 = DIRECTIONAL, 2 = SPOTLIGHT.
+    enum class Type : std::uint32_t {
+        Omni        = 0,
+        Directional = 1,
+        Spotlight   = 2,
+    };
+
+    std::string             name;
+    Type                    type        = Type::Omni;
+    std::array<float, 3>    color       {1.f, 1.f, 1.f};  // linear RGB 0..1
+    float                   intensity   = 1.f;
+    float                   atten_end   = 0.f;            // farAttenuationEnd
+    float                   atten_start = 0.f;            // farAttenuationStart
+    float                   hotspot     = 0.f;            // radians (spotlight)
+    float                   falloff     = 0.f;            // radians (spotlight)
+
+    // Index into ExportScene::bones of the bone this light attaches
+    // to (same convention as ExportMesh::bone_index). Walker creates
+    // a synthetic per-light bone when the light isn't already
+    // parented to one.
+    std::uint32_t           bone_index  = 0;
+};
+
+// Phase 7a: 0x603 proxy. Vanilla content uses these as
+// particle/effect attachment points (named 'p_*' by convention).
+// They appear inside the 0x600 connections container after the
+// 0x602 per-object connections. Mini-chunks 7/8 are emitted only
+// when their respective bool is true -- vanilla content omits them
+// when default, and Mike's reader treats both as optional.
+struct ExportProxy {
+    std::string             name;
+    std::uint32_t           bone_index = 0;
+    bool                    is_hidden = false;
+    bool                    alt_decrease_stay_hidden = false;
+};
+
 // Full snapshot of an exportable scene. The writer in Phase 4b consumes
 // this; the Max-side walker in Phase 4a produces it. Future host walkers
 // (Maya / Blender / etc.) would also produce ExportScene, keeping the
 // writer host-agnostic.
 struct ExportScene {
-    std::vector<ExportBone> bones;
-    std::vector<ExportMesh> meshes;
-    // Future: lights, proxies, connections, animation clips...
+    std::vector<ExportBone>  bones;
+    std::vector<ExportMesh>  meshes;
+    std::vector<ExportLight> lights;    // Phase 7a
+    std::vector<ExportProxy> proxies;   // Phase 7a
+    // Future: connections (currently derived), animation clips, dazzles (UaW non-goal).
 
     // Returns the placeholder root-bone scene every Phase 4 export starts
     // from: one bone named "Root", identity transform, no meshes. Callers
