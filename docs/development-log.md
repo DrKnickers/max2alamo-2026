@@ -625,6 +625,48 @@ Tracked at the bottom of [`docs/format-notes.md`](format-notes.md). Most Phase 4
 
 ---
 
+## Max SDK / MaxScript quirks (calibrated against 3ds Max 2026 SDK)
+
+Non-obvious behaviours of the Max APIs surfaced during walker / harness-test development. Each item is paired with the file or phase that demonstrates the behaviour, so a future investigation can verify if Max's behaviour has changed across versions. Calibrated against `MAX_SDK_DIR=C:/Program Files/Autodesk/3ds Max 2026 SDK/maxsdk` (MSVC 14.50). Behaviour may differ in earlier or later Max versions.
+
+### TM accessors
+
+- **`IGameNode::GetLocalTM(t)` / `GetWorldTM(t)` / `GetObjectTM(t)` all OMIT the object offset.** "Affect Pivot Only" rotation (Max's `objectoffsetrot`) is not captured by any IGame TM accessor. To compose the full pivot orientation, pull components via the underlying `INode`: `inode->GetObjOffsetRot()` / `GetObjOffsetPos()` / `GetObjOffsetScale()`. See Phase 5g's `compose_with_object_offset` helper in [`max2alamo/src/scene_walker.cpp`](../max2alamo/src/scene_walker.cpp). Composition order is `offset_TM * node_TM` (row-vector convention; offset applied first to convert pivot-space to node-space, then node TM to convert to parent-space). Confirmed via the empirical probes that became `test_pivot_affect_only.ms` (Phase 5g).
+
+- **`INode::IsNodeHidden()` is STATIC — no TimeValue overload.** For per-frame visibility, use `INode::GetVisibility(TimeValue t, Interval* valid = NULL)` ([`maxsdk/include/inode.h:933`](C:\Program%20Files\Autodesk\3ds%20Max%202026%20SDK\maxsdk\include\inode.h)). Returns a float in `[0, 1]`: `0.0` = invisible, `1.0` = opaque, `< 0` = off. Threshold at `≥ 0.5` for binary on/off encoding into the .ala 0x1007 chunk (planned for Phase 8d).
+
+- **`BoneSys.createBone <from> <to>` direction args do NOT propagate to the node TM.** A bone created from `[0,0,0]` to `[20,0,0]` (visually pointing +X) has node TM = identity. The bone's procedural-display direction lives in bone-object internal data with no Max SDK accessor. Programmatic bone authoring should set rotation via `node.rotation = …` if the direction needs to round-trip into the exported `.alo` matrix.
+
+- **BoneSys bones DOUBLE-APPLY `objectoffsetrot`.** Setting `b.objectoffsetrot = quat -90°-Z` on a `BoneSys.createBone` produces 180° in the resulting node TM (composes via Max-internal logic that's not visible from the SDK). Workaround: use `b.rotation = …` instead of Affect Pivot Only for BoneSys bones. Dummy/Point helpers do NOT have this quirk and ARE the canonical hardpoint authoring pattern. See Phase 5g caveat in [`tests/maxscript/test_pivot_affect_only.ms`](../tests/maxscript/test_pivot_affect_only.ms) preamble.
+
+### MaxScript
+
+- **`local` keyword can only appear inside a block**, not at the top level of a `.ms` file. Top-level assignments are implicit globals.
+
+- **`anchor` is a reserved or conflicting name**; use `anchorBox` or similar in test scenes.
+
+- **`animate on (...)` block syntax** is the standard for keyframe authoring. Inside the block, `at time T (expr)` sets a key at frame T. Adjacent keys at frame N and N+1 with the same controller produce a sharp 1-frame transition (no in-between sample). Phase 8d's blinking-light test will rely on this for deterministic visibility encoding.
+
+- **`rootNode` (global) returns the Max scene graph's root** — used to set/read scene-level user properties. Phase 8's `Alamo_Anim_Start` / `Alamo_Anim_End` / `Alamo_Anim_Name` live here.
+
+### Skinning
+
+- **`IGameMesh::GetVertex(idx, /*objectSpace=*/true)` returns object-space coordinates** (not world-space). Vertices feed into the `.alo`'s `0x10007` stream verbatim. The bone matrix written to `0x206` is the node TM, post-Phase 5g composed with object offset. Runtime `world = bone_matrix * vertex` works because vertices were authored relative to the same frame the bone matrix represents.
+
+- **`IGameSkin::GetBone()` only returns real Max bones** (or helpers-as-bones). Skin-influence INodes are a subset of `bone_map` keys. The skin-resolution code in `walk_node` only LOOKS UP keys it gets from the modifier — adding extra entries to `bone_map` (e.g. for synth bones) is structurally safe for skinning. Phase 8d nevertheless introduces a SEPARATE `visibility_map` to avoid expanding rotation/translation track emission (which IS keyed off `bone_map` iteration) onto light/proxy/static-mesh synth bones.
+
+### `.ala` format
+
+- **0x1007 visibility chunks appear in BOTH EaW and FoC** corpus files, despite `docs/format-notes.md`'s bracketing implying they're EaW-only. Confirmed via `alo_dump` of FoC file `AI_RANCOR_ATTACK_00.ALA` at offset 5761. The chunk lives inside the per-bone `0x1002` container, sibling of `0x1003`.
+
+- **Scale tracks are absent from vanilla FoC content.** Corpus survey during Phase 8c found 0/1500 FoC `.ala` files have `nScaleWords > 0`. The format defines no chunk ID for a file-scope scale pool. Phase 8c/8d emit `n_scale_words = 0` and leave `idx_scale = -1` on every bone; the `AlaBoneTrack::scale_*` fields stay at struct defaults.
+
+### Authoring conventions
+
+- **The user authors hardpoints as either:** (1) Dummy/Point helper with `Alamo_Export_Transform = true` (Phase 5e helpers-as-bones) and the pivot oriented via Hierarchy → Affect Pivot Only; OR (2) HIDDEN BoneSys bone (Max's standard `IsNodeHidden` flag) with direction set via `b.rotation = …`. The user does NOT use `Alamo_Export_Geometry = false` on a mesh as a hardpoint marker — that flag causes the walker to skip the whole node ([`scene_walker.cpp:862-870`](../max2alamo/src/scene_walker.cpp)), so no bone is emitted at all.
+
+---
+
 ## Quick command cheat sheet
 
 ```powershell
