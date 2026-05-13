@@ -20,11 +20,16 @@
 #include "alamo_proxy_helper.h"  // for kAlamoProxyClassID
 
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace max2alamo {
 
@@ -1076,13 +1081,177 @@ void diag_walk_node(IGameNode* node, std::ostringstream& os)
     }
 }
 
+// ---- Phase 8b: animation pass ---------------------------------------------
+
+// Pack a Quat to int16 XYZW per the .ala convention (scale 32767, clamp
+// to [-32767, 32767] so negation never overflows).
+std::array<std::int16_t, 4> pack_quat_int16(const Quat& q)
+{
+    auto pack = [](float c) {
+        float v = c * 32767.0f;
+        if (v >  32767.0f) v =  32767.0f;
+        if (v < -32767.0f) v = -32767.0f;
+        return static_cast<std::int16_t>(std::lround(v));
+    };
+    return { pack(q.x), pack(q.y), pack(q.z), pack(q.w) };
+}
+
+// Extract rotation-only Quat from a Matrix3 (drop scale by normalising
+// each column of the upper-left 3x3 to unit length, then construct a
+// Quat from the resulting rotation matrix).
+Quat extract_rotation_quat(const Matrix3& m3_in)
+{
+    Matrix3 m3 = m3_in;
+    Point3 row0 = m3.GetRow(0);
+    Point3 row1 = m3.GetRow(1);
+    Point3 row2 = m3.GetRow(2);
+    auto safe_norm = [](Point3 p) {
+        float n = p.Length();
+        if (n < 1e-9f) return Point3(1.f, 0.f, 0.f);
+        return p / n;
+    };
+    row0 = safe_norm(row0);
+    row1 = safe_norm(row1);
+    row2 = safe_norm(row2);
+    m3.SetRow(0, row0);
+    m3.SetRow(1, row1);
+    m3.SetRow(2, row2);
+    m3.SetRow(3, Point3(0.f, 0.f, 0.f));
+    return Quat(m3);
+}
+
+// User-prop keys for clip authoring (read on the scene-root node).
+const TCHAR* kPropAnimStart = _T("Alamo_Anim_Start");
+const TCHAR* kPropAnimEnd   = _T("Alamo_Anim_End");
+const TCHAR* kPropAnimName  = _T("Alamo_Anim_Name");
+
+void walk_animation(IGameScene* igame,
+                    Interface* max_interface,
+                    const std::unordered_map<INode*, std::uint32_t>& bone_map,
+                    const alamo_format::ExportScene& scene,
+                    alamo_format::AlaAnimation& out_anim)
+{
+    out_anim = alamo_format::AlaAnimation{};
+
+    if (!max_interface || !igame) return;
+    INode* root = max_interface->GetRootNode();
+    if (!root) return;
+
+    const int start = read_node_user_prop_int(root, kPropAnimStart, 0);
+    const int end   = read_node_user_prop_int(root, kPropAnimEnd,   0);
+    if (end <= start) return;  // no clip authored -> no .ala
+
+    const int n_frames = end - start + 1;
+
+    // Build the reverse map: bone-index -> INode*, with nullptr for
+    // synthetic bones that are not in bone_map.
+    std::vector<INode*> animatable(scene.bones.size(), nullptr);
+    for (const auto& kv : bone_map) {
+        if (kv.second < animatable.size()) animatable[kv.second] = kv.first;
+    }
+    // Map each animatable INode* back to its IGameNode* (so we can use
+    // GetLocalTM(t), which is on IGameNode rather than INode).
+    std::unordered_map<INode*, IGameNode*> max_to_igame;
+    const int top = igame->GetTopLevelNodeCount();
+    // Recursive lambda via std::function (cheap; called O(scene-node-count)).
+    std::function<void(IGameNode*)> visit = [&](IGameNode* g) {
+        if (!g) return;
+        if (INode* mn = g->GetMaxNode()) max_to_igame[mn] = g;
+        for (int j = 0; j < g->GetChildCount(); ++j) visit(g->GetNodeChild(j));
+    };
+    for (int i = 0; i < top; ++i) visit(igame->GetTopLevelNode(i));
+
+    // First pass: create one AlaBoneTrack per ExportScene bone; assign
+    // idx_rotation for each animatable bone.
+    out_anim.is_foc   = true;
+    out_anim.n_frames = static_cast<std::uint32_t>(n_frames);
+    out_anim.fps      = static_cast<float>(::GetFrameRate());
+    out_anim.bones.reserve(scene.bones.size());
+
+    std::int16_t next_slot = 0;
+    for (std::size_t i = 0; i < scene.bones.size(); ++i) {
+        alamo_format::AlaBoneTrack t;
+        t.name            = scene.bones[i].name;
+        t.skeleton_index  = static_cast<std::uint32_t>(i);
+        // trans_offset / scale_offset etc. left at struct defaults
+        // (Phase 8c will populate these from per-frame min/max).
+        if (animatable[i] != nullptr) {
+            t.idx_rotation = next_slot;
+            next_slot = static_cast<std::int16_t>(next_slot + 4);
+        }
+        out_anim.bones.push_back(std::move(t));
+    }
+    out_anim.n_rotation_words    = static_cast<std::uint32_t>(next_slot);
+    out_anim.n_translation_words = 0;
+    out_anim.n_scale_words       = 0;
+
+    // Set default_rotation per bone (sample at start frame).
+    const int ticks_per_frame = ::GetTicksPerFrame();
+    const TimeValue t_start   = TimeValue(start * ticks_per_frame);
+    for (std::size_t i = 0; i < out_anim.bones.size(); ++i) {
+        if (!animatable[i]) continue;
+        auto it = max_to_igame.find(animatable[i]);
+        if (it == max_to_igame.end()) continue;
+        const Matrix3 m = it->second->GetLocalTM(t_start).ExtractMatrix3();
+        const Quat q   = extract_rotation_quat(m);
+        out_anim.bones[i].default_rotation = pack_quat_int16(q);
+    }
+
+    if (next_slot == 0) {
+        // No animatable bones -> no rotation pool. Leave default-empty.
+        return;
+    }
+
+    // Allocate the rotation pool: nFrames * nRotationWords int16.
+    out_anim.rotation_pool.assign(
+        static_cast<std::size_t>(n_frames) * static_cast<std::size_t>(next_slot),
+        std::int16_t{0});
+
+    // Second pass: sample per frame, pack with sign canonicalisation
+    // against the previous frame's quat for each bone.
+    std::vector<Quat> previous_quat(scene.bones.size(), Quat(0.f, 0.f, 0.f, 1.f));
+    std::vector<std::uint8_t> seen(scene.bones.size(), 0);  // 0 = first-frame placeholder
+    for (int f = 0; f < n_frames; ++f) {
+        const TimeValue t = TimeValue((start + f) * ticks_per_frame);
+        for (std::size_t i = 0; i < out_anim.bones.size(); ++i) {
+            if (out_anim.bones[i].idx_rotation < 0) continue;
+            auto it = max_to_igame.find(animatable[i]);
+            if (it == max_to_igame.end()) continue;
+            const Matrix3 m = it->second->GetLocalTM(t).ExtractMatrix3();
+            Quat q          = extract_rotation_quat(m);
+
+            // Sign canonicalisation: if dot(q, previous) < 0, negate q.
+            if (seen[i]) {
+                const Quat& p = previous_quat[i];
+                const float d = q.x*p.x + q.y*p.y + q.z*p.z + q.w*p.w;
+                if (d < 0.f) {
+                    q.x = -q.x; q.y = -q.y; q.z = -q.z; q.w = -q.w;
+                }
+            }
+            previous_quat[i] = q;
+            seen[i] = 1;
+
+            const auto packed = pack_quat_int16(q);
+            const std::size_t base =
+                static_cast<std::size_t>(f) * static_cast<std::size_t>(next_slot)
+                + static_cast<std::size_t>(out_anim.bones[i].idx_rotation);
+            out_anim.rotation_pool[base + 0] = packed[0];
+            out_anim.rotation_pool[base + 1] = packed[1];
+            out_anim.rotation_pool[base + 2] = packed[2];
+            out_anim.rotation_pool[base + 3] = packed[3];
+        }
+    }
+}
+
 // ---- Main entry points ----------------------------------------------------
 
-bool walk_scene(Interface*                  /*max_interface*/,
-                alamo_format::ExportScene&  out,
+bool walk_scene(Interface*                  max_interface,
+                alamo_format::ExportScene&  out_scene,
+                alamo_format::AlaAnimation& out_anim,
                 std::string&                out_error)
 {
-    out = alamo_format::ExportScene::with_root_bone();
+    out_scene = alamo_format::ExportScene::with_root_bone();
+    out_anim  = alamo_format::AlaAnimation{};
     out_error.clear();
 
     IGameScene* igame = GetIGameInterface();
@@ -1112,25 +1281,31 @@ bool walk_scene(Interface*                  /*max_interface*/,
     // mesh-walk's skin resolver.
     std::unordered_map<INode*, std::uint32_t> bone_map;
     for (int i = 0; i < top_count; ++i) {
-        walk_bones(igame->GetTopLevelNode(i), /*parent_bone_idx=*/0, out, bone_map);
+        walk_bones(igame->GetTopLevelNode(i), /*parent_bone_idx=*/0, out_scene, bone_map);
     }
 
     // Pass 2: meshes. Skinned meshes attach to Root and reference real
     // bones per-vertex; static meshes still get a synthetic per-mesh
     // attachment bone (Phase 4c).
     for (int i = 0; i < top_count; ++i) {
-        walk_node(igame->GetTopLevelNode(i), out, bone_map);
+        walk_node(igame->GetTopLevelNode(i), out_scene, bone_map);
     }
 
     // Pass 3 (Phase 7b.1/2): lights, including spotlights with their
     // .Target sibling bones.
-    walk_lights(igame, out);
+    walk_lights(igame, out_scene);
 
     // Pass 4 (Phase 7c.2): Alamo_Proxy helpers (particle/effect
     // attachment points). Class_ID-based detection -- not name
     // prefix; users explicitly place these via Create > Helpers >
     // Standard > Alamo Proxy.
-    walk_proxies(igame, out);
+    walk_proxies(igame, out_scene);
+
+    // Pass 5 (Phase 8b): animation. Samples real Max bones + helpers-
+    // as-bones in bone_map over the Alamo_Anim_Start..End range read
+    // from the scene-root user props. If no clip range authored,
+    // out_anim stays default-constructed (caller skips .ala write).
+    walk_animation(igame, max_interface, bone_map, out_scene, out_anim);
 
     igame->ReleaseIGame();
     return true;
