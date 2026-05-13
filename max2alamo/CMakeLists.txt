@@ -41,8 +41,10 @@ add_library(max2alamo SHARED
     src/plugin_entry.cpp
     src/alo_export.cpp
     src/scene_walker.cpp
+    src/alamo_utility.cpp
     resources/max2alamo.def
     resources/max2alamo.rc
+    resources/utility_dialogs.rc
 )
 
 # Plugins use the .dle extension; Max only loads files with that suffix.
@@ -69,6 +71,7 @@ target_link_libraries(max2alamo PRIVATE
     geom         # Point3 / Matrix3 helpers used by scene_walker
     IGame        # IGameScene / IGameNode / IGameMesh
     bmm          # BitmapInfo::Name (used when reading DXMaterial bitmaps)
+    paramblk2    # IUtil / UtilityObj (Alamo Utility command-panel plugin)
 )
 
 target_link_libraries(max2alamo PRIVATE alamo_format)
