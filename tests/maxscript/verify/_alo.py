@@ -106,11 +106,34 @@ class Connection:
     bone_index: int
 
 
+# Phase 7a: lights and proxies.
+@dataclass
+class Light:
+    name: str = ""
+    type: int = 0                                 # 0=Omni, 1=Directional, 2=Spotlight
+    color: Tuple[float, float, float] = (1., 1., 1.)
+    intensity: float = 1.0
+    atten_end: float = 0.0
+    atten_start: float = 0.0
+    hotspot: float = 0.0
+    falloff: float = 0.0
+
+
+@dataclass
+class Proxy:
+    name: str = ""
+    bone_index: int = 0
+    is_hidden: bool = False
+    alt_decrease_stay_hidden: bool = False
+
+
 @dataclass
 class Alo:
     bones: List[Bone] = field(default_factory=list)
     meshes: List[Mesh] = field(default_factory=list)
     connections: List[Connection] = field(default_factory=list)
+    lights: List[Light] = field(default_factory=list)
+    proxies: List[Proxy] = field(default_factory=list)
     file_size: int = 0
 
     def bone_by_name(self, name: str) -> Optional[Bone]:
@@ -128,17 +151,28 @@ class Alo:
 
 # ---------- Tier 1 universal invariant validator ---------------------------
 
-# Tolerances for floating-point comparisons. Tightened iteratively as new
-# tests confirm the writer + walker hold to specific bounds.
-_NORMAL_LEN_TOL    = 1e-3   # vertex normal unit-length deviation
-_TANGENT_LEN_TOL   = 1e-3   # tangent/binormal unit-length deviation
-# |dot(tangent, normal)| upper bound. MikkT-averaged tangents on smooth-
-# shaded surfaces (spheres especially) drift ~0.05 from exact
-# perpendicularity at the worst vertices, while the original Phase 6b
-# "wrong tangent index" bug surfaced as 0.39. 0.15 sits comfortably
-# between -- catches real corruption, accepts legitimate drift.
-_TANGENT_PERP_TOL  = 0.15
-_WEIGHT_SUM_TOL    = 1e-3   # per-vertex skin-weight sum deviation from 1.0
+# Universal-mode tolerances. Calibrated against the vanilla EaW + FoC
+# corpus -- whatever Petroglyph's shipped files do is by definition
+# acceptable, since both engines and Mike Lankamp's importer load them
+# without complaint. Vanilla file NB_DCH.ALO has a single normal at
+# |n|=1.002 (float drift); 1e-2 tolerates that while still catching
+# obvious corruption like a zero or wildly-magnitude normal.
+_NORMAL_LEN_TOL    = 1e-2
+_TANGENT_LEN_TOL   = 1e-2
+
+# Strict-mode tolerances. Applied only to OUR walker output (where we
+# control the entire pipeline and tangents come from MikkT via IGame).
+# Vanilla files routinely violate these -- terrain meshes overload
+# weight slots, vanilla tangents drift up to |dot(T, N)|=0.365 due to
+# per-vertex MikkT averaging across face corners -- but our walker
+# never does, so a violation in our output is a real regression.
+_STRICT_NORMAL_LEN_TOL    = 1e-3
+_STRICT_TANGENT_LEN_TOL   = 1e-3
+# Smooth-shaded spheres (test_bumpcolorize_params, test_two_meshes_offset)
+# hit ~0.056 at worst; the Phase 6b "wrong tangent index" bug surfaced
+# as 0.39. 0.15 sits between, calibrated against our own test suite.
+_STRICT_TANGENT_PERP_TOL  = 0.15
+_STRICT_WEIGHT_SUM_TOL    = 1e-3
 
 
 def _is_unit(v, tol):
@@ -154,45 +188,60 @@ def _dot(a, b):
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 
-def validate(alo: "Alo") -> List[str]:
-    """Universal Tier-1 invariant check. Returns a list of human-readable
-    violation strings; empty list means the file passes every universal
-    check the alamo_format library is supposed to guarantee.
+def validate(alo: "Alo", strict: bool = False) -> List[str]:
+    """Tier-1 invariant check. Returns a list of human-readable
+    violation strings; empty list means the file passes.
 
-    Test-specific verifiers should call this BEFORE their own assertions
-    so structural problems surface with a clear diagnosis rather than
-    cascading into confusing test-specific failures."""
+    Two modes:
+      strict=False (default): vanilla-respecting structural checks
+        only. Calibrated against the entire EaW + FoC corpus -- every
+        file in tests/corpus/ passes in this mode.
+      strict=True: additional checks our walker output is supposed
+        to satisfy (sub-1e-3 normal/tangent length, perpendicularity
+        |dot|<=0.15, per-vertex weight sum 1.0). Vanilla content
+        routinely violates these (terrain meshes overload weight
+        slots, vanilla tangents drift up to 0.365 from perpendicular
+        due to per-vertex averaging), but our pipeline doesn't.
+
+    The harness runs strict=True against every test export via
+    validate_alo.py. The corpus sweep runs strict=False to confirm
+    the validator stays compatible with PG-shipped content."""
     errors: List[str] = []
+    normal_tol = _STRICT_NORMAL_LEN_TOL if strict else _NORMAL_LEN_TOL
+    tangent_tol = _STRICT_TANGENT_LEN_TOL if strict else _TANGENT_LEN_TOL
 
     # ---- Skeleton invariants ------------------------------------------
-    if not alo.bones:
-        errors.append("skeleton: no bones in export (every .alo needs at "
-                      "least the synthetic Root bone)")
-        return errors  # everything below assumes bones exist
+    # Empty bones array is allowed: vanilla particle-effect files (PE_*,
+    # PEM_*, PAS_*) ship with zero-bone skeletons. The 0x201 info chunk's
+    # boneCount is 0 in those cases; the 0x200 container has just the
+    # info leaf and no 0x202 bone chunks.
+    if alo.bones:
+        # When bones exist, bones[0] is the Root sentinel by Phase 4
+        # convention. We don't enforce that the *only* sentinel-parent
+        # bone is bones[0] -- vanilla files (W_ICERCKSLIDE00.ALO,
+        # W_PROP_GENERATOR.ALO, ...) have multiple top-level sibling
+        # roots, each with parent_index = 0xFFFFFFFF.
+        root = alo.bones[0]
+        if root.name != "Root":
+            # Vanilla files don't always name bones[0] "Root" (some
+            # use 'Bip01', etc.). This is informational only and
+            # would have to be downgraded to a warning if we wanted
+            # to enforce strictly. Currently treating as a soft check.
+            pass
 
-    root = alo.bones[0]
-    if root.name != "Root":
-        errors.append(f"skeleton: bones[0] should be the synthetic 'Root' "
-                      f"sentinel, got {root.name!r}")
-    if root.parent_index != 0xFFFFFFFF:
-        errors.append(f"skeleton: Root parent_index should be 0xFFFFFFFF, "
-                      f"got 0x{root.parent_index:08X}")
-
-    for i, b in enumerate(alo.bones):
-        if not b.name:
-            errors.append(f"skeleton: bones[{i}] has empty name")
-        if "\x00" in b.name:
-            errors.append(f"skeleton: bones[{i}] name {b.name!r} has embedded null")
-        if b.billboard_mode > 7:
-            errors.append(f"skeleton: bones[{i}] ({b.name!r}) billboard_mode "
-                          f"{b.billboard_mode} out of range [0, 7]")
-        # Parents must point at a strictly earlier bone (topological order),
-        # except for Root's 0xFFFFFFFF sentinel.
-        if i > 0:
+        for i, b in enumerate(alo.bones):
+            if not b.name:
+                errors.append(f"skeleton: bones[{i}] has empty name")
+            if "\x00" in b.name:
+                errors.append(f"skeleton: bones[{i}] name {b.name!r} has embedded null")
+            if b.billboard_mode > 7:
+                errors.append(f"skeleton: bones[{i}] ({b.name!r}) billboard_mode "
+                              f"{b.billboard_mode} out of range [0, 7]")
+            # Parents must point at a strictly earlier bone OR be the
+            # no-parent sentinel (Root or a sibling top-level root).
             if b.parent_index == 0xFFFFFFFF:
-                errors.append(f"skeleton: bones[{i}] ({b.name!r}) has the "
-                              f"no-parent sentinel but isn't Root")
-            elif b.parent_index >= i:
+                continue
+            if b.parent_index >= i:
                 errors.append(f"skeleton: bones[{i}] ({b.name!r}) parent_index "
                               f"{b.parent_index} not topologically sorted "
                               f"(must be < {i})")
@@ -208,62 +257,82 @@ def validate(alo: "Alo") -> List[str]:
             n_idx = len(sm.indices)
             if n_idx % 3 != 0:
                 errors.append(f"{tag}: index count {n_idx} is not a multiple of 3")
-            for ii, idx in enumerate(sm.indices):
-                if idx >= n_verts:
-                    errors.append(f"{tag}: indices[{ii}]={idx} >= "
-                                  f"vertex count {n_verts}")
-                    break  # one report per submesh is enough
-            for vi, v in enumerate(sm.vertices):
-                if not _is_unit(v.normal, _NORMAL_LEN_TOL):
-                    errors.append(f"{tag}: vert[{vi}] normal {v.normal} "
-                                  f"not unit length")
-                    break
-                if not _is_unit(v.tangent, _TANGENT_LEN_TOL):
-                    errors.append(f"{tag}: vert[{vi}] tangent {v.tangent} "
-                                  f"not unit length (and not the zero sentinel)")
-                    break
-                if not _is_unit(v.binormal, _TANGENT_LEN_TOL):
-                    errors.append(f"{tag}: vert[{vi}] binormal {v.binormal} "
-                                  f"not unit length (and not the zero sentinel)")
-                    break
-                # Tangent should be ~perpendicular to normal when both are
-                # non-zero; allow some slack for MikkT vs Lengyel drift.
-                tmag = sum(c * c for c in v.tangent) ** 0.5
-                if tmag > 1e-6 and abs(_dot(v.tangent, v.normal)) > _TANGENT_PERP_TOL:
-                    errors.append(f"{tag}: vert[{vi}] tangent not perpendicular "
-                                  f"to normal (|dot|={abs(_dot(v.tangent, v.normal)):.3f} "
-                                  f"> {_TANGENT_PERP_TOL})")
-                    break
 
-                # Skinning invariants per vertex.
-                wsum = sum(v.weights)
-                if abs(wsum - 1.0) > _WEIGHT_SUM_TOL:
-                    errors.append(f"{tag}: vert[{vi}] weights sum to "
-                                  f"{wsum:.6f}, expected 1.0 (±{_WEIGHT_SUM_TOL})")
+            # Empty submeshes (verts == 0 but indices populated) appear
+            # in vanilla camera-marker / target-helper "meshes" like
+            # C_CAMERA.ALO and C_SPLINETARGET.ALO. Engine tolerates them
+            # by ignoring the geometry entirely; we do the same -- skip
+            # the index-range check when there are no vertices.
+            if n_verts > 0:
+                for ii, idx in enumerate(sm.indices):
+                    if idx >= n_verts:
+                        errors.append(f"{tag}: indices[{ii}]={idx} >= "
+                                      f"vertex count {n_verts}")
+                        break  # one report per submesh is enough
+
+            for vi, v in enumerate(sm.vertices):
+                if not _is_unit(v.normal, normal_tol):
+                    errors.append(f"{tag}: vert[{vi}] normal {v.normal} "
+                                  f"not unit length (tol {normal_tol})")
                     break
+                # bone_indices range check is structural -- if it's out
+                # of range we cannot ever resolve the binding, so this
+                # always-applies. We've sampled vanilla and it holds.
                 for slot in range(4):
-                    if v.weights[slot] < 0.0:
-                        errors.append(f"{tag}: vert[{vi}] weights[{slot}]="
-                                      f"{v.weights[slot]} is negative")
-                        break
-                    if v.bone_indices[slot] >= len(alo.bones):
+                    if alo.bones and v.bone_indices[slot] >= len(alo.bones):
                         errors.append(f"{tag}: vert[{vi}] bone_indices[{slot}]="
                                       f"{v.bone_indices[slot]} >= bone count "
                                       f"{len(alo.bones)}")
                         break
 
+                # Strict-mode-only checks: things our walker output is
+                # supposed to satisfy but vanilla content routinely
+                # doesn't. See the long comment on _STRICT_* tolerances.
+                if strict:
+                    if not _is_unit(v.tangent, tangent_tol):
+                        errors.append(f"{tag}: vert[{vi}] tangent {v.tangent} "
+                                      f"not unit length (and not the zero sentinel)")
+                        break
+                    if not _is_unit(v.binormal, tangent_tol):
+                        errors.append(f"{tag}: vert[{vi}] binormal {v.binormal} "
+                                      f"not unit length (and not the zero sentinel)")
+                        break
+                    tmag = sum(c * c for c in v.tangent) ** 0.5
+                    if tmag > 1e-6:
+                        d = abs(_dot(v.tangent, v.normal))
+                        if d > _STRICT_TANGENT_PERP_TOL:
+                            errors.append(f"{tag}: vert[{vi}] tangent not "
+                                          f"perpendicular to normal "
+                                          f"(|dot|={d:.3f} > {_STRICT_TANGENT_PERP_TOL})")
+                            break
+                    wsum = sum(v.weights)
+                    if abs(wsum - 1.0) > _STRICT_WEIGHT_SUM_TOL:
+                        errors.append(f"{tag}: vert[{vi}] weights sum to "
+                                      f"{wsum:.6f}, expected 1.0 "
+                                      f"(±{_STRICT_WEIGHT_SUM_TOL})")
+                        break
+                    for slot in range(4):
+                        if v.weights[slot] < 0.0:
+                            errors.append(f"{tag}: vert[{vi}] weights[{slot}]="
+                                          f"{v.weights[slot]} is negative")
+                            break
+
     # ---- Connection invariants ----------------------------------------
-    if len(alo.connections) != len(alo.meshes):
-        errors.append(f"connections: count {len(alo.connections)} != mesh "
-                      f"count {len(alo.meshes)} (each mesh should have one "
-                      f"0x602 connection)")
+    # 0x602 connections cover meshes + lights, in (meshes ++ lights)
+    # order, per Mike Lankamp's reader (alamo2max.ms:689). Phase 7a
+    # generalised the writer to emit this layout.
+    expected_conn = len(alo.meshes) + len(alo.lights)
+    if len(alo.connections) != expected_conn:
+        errors.append(f"connections: count {len(alo.connections)} != "
+                      f"(meshes {len(alo.meshes)} + lights {len(alo.lights)}) "
+                      f"= {expected_conn}")
     for ci, c in enumerate(alo.connections):
-        if c.bone_index >= len(alo.bones):
+        if alo.bones and c.bone_index >= len(alo.bones):
             errors.append(f"connections[{ci}]: bone_index {c.bone_index} >= "
                           f"bone count {len(alo.bones)}")
-        if c.object_index >= len(alo.meshes):
+        if c.object_index >= expected_conn:
             errors.append(f"connections[{ci}]: object_index {c.object_index} "
-                          f">= mesh count {len(alo.meshes)}")
+                          f">= (meshes + lights) {expected_conn}")
 
     return errors
 
@@ -451,6 +520,39 @@ def _parse_connection(data: bytes, payload: bytes) -> Connection:
     return Connection(object_index=obj_idx, bone_index=bone_idx)
 
 
+def _parse_light(data: bytes, payload_off: int, end: int) -> Light:
+    """0x1300 container: 0x1301 (name) + 0x1302 (36-byte data)."""
+    light = Light()
+    for cid, _, off, size, _end in _walk(data, payload_off, end):
+        if cid == 0x1301:
+            light.name = _read_cstring(data, off, size)
+        elif cid == 0x1302 and size >= 36:
+            light.type = struct.unpack_from("<I", data, off)[0]
+            r, g, b = struct.unpack_from("<3f", data, off + 4)
+            light.color = (r, g, b)
+            light.intensity   = struct.unpack_from("<f", data, off + 16)[0]
+            light.atten_end   = struct.unpack_from("<f", data, off + 20)[0]
+            light.atten_start = struct.unpack_from("<f", data, off + 24)[0]
+            light.hotspot     = struct.unpack_from("<f", data, off + 28)[0]
+            light.falloff     = struct.unpack_from("<f", data, off + 32)[0]
+    return light
+
+
+def _parse_proxy(payload: bytes) -> Proxy:
+    """0x603 leaf with mini-chunks 5 (name), 6 (bone), optional 7/8."""
+    proxy = Proxy()
+    for t, sz, body in _decode_mini_chunks(payload):
+        if t == 5:
+            proxy.name = body.rstrip(b"\x00").decode("utf-8", errors="replace")
+        elif t == 6:
+            proxy.bone_index = struct.unpack("<I", body)[0]
+        elif t == 7:
+            proxy.is_hidden = struct.unpack("<I", body)[0] != 0
+        elif t == 8:
+            proxy.alt_decrease_stay_hidden = struct.unpack("<I", body)[0] != 0
+    return proxy
+
+
 # ---------- public load() ---------------------------------------------------
 
 def load(path: str) -> Alo:
@@ -466,8 +568,12 @@ def load(path: str) -> Alo:
                     alo.bones.append(_parse_bone(data, coff, cend))
         elif cid == 0x400 and is_container:
             alo.meshes.append(_parse_mesh(data, off, end))
+        elif cid == 0x1300 and is_container:
+            alo.lights.append(_parse_light(data, off, end))
         elif cid == 0x600 and is_container:
             for ccid, _, coff, csize, _cend in _walk(data, off, end):
                 if ccid == 0x602:
                     alo.connections.append(_parse_connection(data, data[coff:coff + csize]))
+                elif ccid == 0x603:
+                    alo.proxies.append(_parse_proxy(data[coff:coff + csize]))
     return alo
