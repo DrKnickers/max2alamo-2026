@@ -1,0 +1,2 @@
+add_executable(ala_typed_roundtrip main.cpp)
+target_link_libraries(ala_typed_roundtrip PRIVATE alamo_format)
