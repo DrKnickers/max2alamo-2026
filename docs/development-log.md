@@ -43,6 +43,7 @@ Single-file project status + history. Open this first when picking up a new sess
 | 7d | Acceptance: full integration test (skinned mesh + bones + lights + proxies) | ✅ shipped | `test_phase7_acceptance` combines 2 real bones + helper-as-bone + skinned cylinder + static box + Omni + TargetSpot + 2 proxies in one scene (10 bones / 2 meshes / 2 lights / 2 proxies / 4 connections). Tier 1 strict clean, Tier 2 byte-identical, Tier 3 verifier with **31 interaction-shaped assertions** across 8 groups (skeleton/mutex/wiring/lights/proxies/connections/matrices/log) all pass; 3× byte-identical determinism (SHA `56FCEAF0…`); 24/24 harness, 60/60 unit, 2066/2066 corpus; tripwires confirm assertions actually bite. |
 | 8a | Format library: typed `.ala` read/write pipeline (`AlaAnimation` struct + `build_ala` + `read_ala` + `ala_typed_roundtrip` CLI + 21 Catch2 tests) | ✅ shipped | **2863/2863 vanilla `.ala` byte-identical** via typed pipeline (1500/1500 FoC + 1363/1363 EaW — exceeded plan's parse-clean bar for EaW). Design key: typed fields + raw payload preservation per leaf, so read-then-write is identity by construction. 3× full-corpus determinism; `alo_dump` output identical across runs; 81/81 unit tests; non-regression on `alo_roundtrip` (4929/4929) and `.alo` corpus sweep (2066/2066); three negative tripwires fire on the expected assertion. |
 | 8b | Walker rotation pass: `walk_animation()` samples `IGameNode::GetLocalTM(t)` per frame for every bone in `bone_map`; packs int16 XYZW with sign canonicalisation; exporter writes `.ala` next to `.alo` when at least one bone has a rotation track | ✅ shipped | `test_rotation_keyframes` (single bone keyframed 0°→90° about Z over 31 frames) round-trips through Tier 1 (`.alo` strict), Tier 2 (chunk-tree), Tier 2-ala (typed pipeline), Tier 3 (17-assertion verifier). Frame[0]=(0,0,0,1), frame[30]=(0,0,0.7071,0.7071) within 1e-3. 25/25 harness (existing 24 still produce only `.alo`; no spurious `.ala`); 3× byte-identical determinism (`.alo` `3791F274…`, `.ala` `2B60515B…`); existing test_phase7_acceptance still SHA `56FCEAF0…` post-rebuild. Non-regression: 4929/4929 chunk-tree · 2066/2066 .alo sweep · 2863/2863 .ala typed-pipeline · 81/81 unit. Three negative tripwires fire on the expected assertion. |
+| 8c | Walker translation tracks: extends `walk_animation()` to scan per-frame `Matrix3::GetRow(3)` for every animatable bone, compute per-bone `trans_offset` (min) / `trans_scale` (max-min)/65535, pack `uint16[3]` into `0x100a`. Single `GetLocalTM` per (bone,frame) shared with rotation extraction. Scale tracks confirmed absent from FoC vanilla (0/1500); 8c emits `n_scale_words=0` and leaves `idx_scale=-1`. | ✅ shipped | `test_translation_keyframes` (2-bone scene: TransBone keyframed [0,0,0]→[10,20,5], RotBone constant position + 0°→90° Z rotation). 25-assertion verifier covers structural, slot assignment, rotation, and translation groups; all pass. Frame[0] position ≈ (0,0,0), frame[30] ≈ (10,20,5) within 1e-3. RotBone has degenerate `trans_scale=(0,0,0)` (constant position) — exercises the divide-by-zero guard. 26/26 harness; 3× byte-identical determinism (`.alo` `A0C333A2…`, `.ala` `749EBCE8…`); Phase 7d test still SHA `56FCEAF0…` post-rebuild. Non-regression: 4929/4929 · 2066/2066 · 2863/2863 · 81/81. Three negative tripwires fire (dropped keyframe → constant pos; swapped scale axes → per-axis values wrong; off-by-3 word count → pool-size mismatch). |
 | Utility UI | Faithful clone of the legacy PG Alamo Utility panel | ✅ shipped | Three rollouts (Node Export Options / Quick Selection / Animation Settings) appear under Utilities > More... > Alamo Utility; checkboxes/radios round-trip Alamo_* user properties on the selected node |
 | 6a | Effects11 shader stubs for Max 2026 | ✅ shipped | [PR #18](https://github.com/DrKnickers/max2alamo-2026/pull/18) — all 39 PG shaders load in Max 2026's DXSM with PG parameter UIs |
 | 6b | Per-vertex tangent + binormal export | ✅ shipped | [PR #19](https://github.com/DrKnickers/max2alamo-2026/pull/19) — MikkT via `IGameMesh::GetFaceVertexTangentBinormal`; bump shading works |
@@ -50,7 +51,7 @@ Single-file project status + history. Open this first when picking up a new sess
 | 6d | Coord-frame banner in `.export.log` | ✅ shipped | [PR #21](https://github.com/DrKnickers/max2alamo-2026/pull/21) — every export documents `Z up, -Y forward, +X right` |
 | Test harness | Max-side regression suite | ✅ shipped | [PR #23](https://github.com/DrKnickers/max2alamo-2026/pull/23) + [#26](https://github.com/DrKnickers/max2alamo-2026/pull/26) — `scripts/run-max-tests.ps1` runs 6 end-to-end tests via `3dsmaxbatch` |
 | 7 | Lights, hardpoints, proxies | ✅ shipped | Format library + walker + helper plugin class all in place; 24/24 harness covers Omni/Directional/Spotlight/`.Target`/proxies/flags + the 7d full-scene integration. In-game fighter Tier 4 deferred to Phase 8/9. |
-| 8 | Animation export incl. visibility tracks | in progress | Walk cycle + animated visibility play correctly in-game. **Sub-phases:** 8a typed `.ala` read/write pipeline ✅; 8b walker rotation pass ✅; 8c walker translation+scale + FoC pool packing, 8d visibility tracks, 8e full integration acceptance pending. |
+| 8 | Animation export incl. visibility tracks | in progress | Walk cycle + animated visibility play correctly in-game. **Sub-phases:** 8a typed `.ala` read/write pipeline ✅; 8b walker rotation pass ✅; 8c walker translation tracks ✅ (scale tracks confirmed absent from FoC vanilla, skipped); 8d visibility tracks, 8e full integration acceptance pending. |
 | 9 | Polish + v1 release | pending | v1.0 tag with `.dle` published via GitHub Releases |
 
 Each main phase has a corresponding GitHub issue (`#1` for Phase 0.5 through `#10` for Phase 9). Sub-phases (4c-fix, 5a/5b, 6a-d, test harness) shipped as standalone PRs without dedicated issues.
@@ -306,7 +307,7 @@ scripts/
 
 `powershell -File scripts/run-max-tests.ps1` discovers every `tests/maxscript/test_*.ms`, runs each through 3dsmaxbatch when its cached output is stale (or the installed `.dle` is newer), dispatches the paired Python verifier, and reports pass/fail. Timestamp-based caching saves the ~25-second Max boot per test on no-op runs.
 
-Current coverage (25 tests, all green):
+Current coverage (26 tests, all green):
 
 | Test | Pins behaviour from |
 |---|---|
@@ -334,7 +335,8 @@ Current coverage (25 tests, all green):
 | `test_proxy_mesh_light_combined` | Phase 7c.2 — mesh + light + proxies coexist; connection table covers mesh + light only, proxies have their own 0x603 chunks |
 | `test_proxy_mutex_helper_as_bone` | Phase 7c.2 — Alamo_Proxy detection wins over `Alamo_Export_Transform`; non-proxy helpers still respect Phase 5e |
 | `test_phase7_acceptance` | Phase 7d — multi-feature acceptance: skinned cylinder + 2-bone chain + helper-as-bone + static box + Omni + TargetSpot + 2 proxies in one scene; **31 interaction-shaped assertions** across 8 groups (skeleton composition, mutex enforcement, mesh wiring, lights, proxies, connection accounting, bone-matrix orthonormality, `.export.log` cross-check) |
-| `test_rotation_keyframes` | Phase 8b — single bone keyframed 0°→90° about Z over 31 frames; emits sibling `.ala` with FoC framing + `0x1009` rotation pool. **17-assertion verifier** covers chunk structure, FoC mini-chunks, pool size, idx_rotation per bone, frame[0] ≈ identity / frame[30] ≈ 90°-Z within 1e-3, unit-length quats, sign-canonicalisation continuity |
+| `test_rotation_keyframes` | Phase 8b — single bone keyframed 0°→90° about Z over 31 frames; emits sibling `.ala` with FoC framing + `0x1009` rotation pool. **17-assertion verifier** covers chunk structure, FoC mini-chunks, pool size, idx_rotation per bone, frame[0] ≈ identity / frame[30] ≈ 90°-Z within 1e-3, unit-length quats, sign-canonicalisation continuity. **Updated for Phase 8c** to expect a translation pool on the animatable bone (constant position → degenerate `trans_scale=(0,0,0)`). |
+| `test_translation_keyframes` | Phase 8c — 2-bone scene: TransBone keyframed [0,0,0]→[10,20,5], RotBone with constant position + 0°→90° Z rotation. Emits sibling `.ala` with both `0x100a` (372 B) and `0x1009` (496 B) pools. **25-assertion verifier** across 4 groups (structural, slot assignment, rotation, translation); covers per-bone offset/scale round-trip, frame[0] / frame[30] decoded positions within 1e-3, constant-axis degenerate-scale handling, sign-canonicalisation continuity |
 
 The harness is **not CI-runnable** (needs Max install + license seat). It's an on-demand local tool; CI keeps the format-library tests.
 
@@ -534,6 +536,35 @@ Pinned signals:
 - 3× byte-identical determinism on the new test (`.alo` SHA `3791F274…`, `.ala` SHA `2B60515B…`).
 - Non-regression: 4929/4929 `alo_roundtrip` · 2066/2066 `.alo` sweep · 2863/2863 `.ala` typed-pipeline · 81/81 unit.
 - Three negative tripwires: drop the `animate on` block → frame quats wrong (#13/#14); change `Alamo_Anim_End` to 15 → `n_frames = 16` (#3); corrupt the writer to emit `n_translation_words = 3` → assertion #7 fails. All reverted post-demonstration.
+
+### Phase 8c — Walker translation tracks (shipped)
+
+Extends `walk_animation()` to also sample per-frame `Matrix3::GetRow(3)` (the translation row of each bone's `GetLocalTM(t)`) and pack it into a file-scope `0x100a` translation pool alongside the `0x1009` rotation pool. The single `GetLocalTM(t)` call per (bone, frame) is shared with rotation extraction — no extra Max overhead. Per-bone packing:
+
+```
+trans_offset[axis] = min over frames of pos[f].axis
+trans_scale[axis]  = (max - min) / 65535     (clamped to 0 if range < 1e-9)
+packed[f].axis     = round((pos[f].axis - offset) / scale)  in [0, 65535]   (or 0 if scale==0)
+```
+
+Pool elements are stored as `int16` (mirroring the read-side `translation_pool` typing); `uint16` semantics apply on the unpacker side via the per-bone offset+scale transform. Constant-axis bones (where `max == min`) get `trans_scale = 0` and packed values of 0; at runtime the unpacker yields `0 * 0 + offset = offset`, which is the correct constant.
+
+**Scale tracks are deliberately not emitted.** A pre-design corpus survey found **0 of 1500 FoC vanilla `.ala` files** have `nScaleWords > 0`, and the format spec defines no chunk ID for a file-scope scale pool. 8c sets `n_scale_words = 0`, leaves `idx_scale = -1` on every bone, and leaves the per-bone `scale_offset` / `scale_scale` mini-chunks 8/9 at their struct defaults. The `AlaBoneTrack` fields for scale are vestigial relics of an unused format facility.
+
+8c also extends Phase 8b's `verify_test_rotation_keyframes.py` for forward compatibility: every animatable bone now gets a translation track even when its position is constant, so the 8b verifier was updated to expect `n_translation_words == 3` and a `0x100a` chunk (constant-position case → degenerate `trans_scale=(0,0,0)`).
+
+The `.export.log` "Animation:" line now reports both `rotation word(s)` and `translation word(s)`.
+
+Pinned signals:
+- New harness test `test_translation_keyframes` (2-bone scene: TransBone keyframed `[0,0,0] → [10,20,5]`, RotBone with constant position + `0° → 90°` Z rotation). 25-assertion verifier covers structural shape, slot assignment, rotation correctness, translation correctness.
+  - `TransBone.trans_offset ≈ (0, 0, 0)`, `trans_scale ≈ (10/65535, 20/65535, 5/65535)`.
+  - Frame[0] decoded position ≈ `(0, 0, 0)` within `1e-3`; frame[30] ≈ `(10, 20, 5)` within `1e-3`.
+  - `RotBone.trans_scale = (0, 0, 0)` exercises the divide-by-zero guard; frame[0] and frame[30] decode to the same constant position.
+- Full harness: 26/26. Existing 24 static tests still produce only `.alo` (no spurious `.ala`).
+- Phase 7d byte-identity check after plugin rebuild: SHA still `56FCEAF02E3D043E…`.
+- 3× byte-identical determinism on the new test: `.alo` SHA `A0C333A2…`, `.ala` SHA `749EBCE8…`.
+- Non-regression: 4929/4929 chunk-tree · 2066/2066 .alo sweep · 2863/2863 .ala typed-pipeline · 81/81 unit — all unchanged.
+- Three negative tripwires: drop the frame-30 translation keyframe → `trans_scale=(0,0,0)` and frame[30] decodes to (0,0,0) (#D21/#D23); swap `trans_scale` axes 0↔1 in writer → per-axis scale values wrong (#D21/#D23); corrupt `n_translation_words` off-by-3 → mini-chunk 12 wrong + `0x100a` size mismatch (#A7/#A10). All reverted post-demonstration.
 
 ### Phase 9 — Polish + v1 release
 
