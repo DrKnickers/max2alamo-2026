@@ -39,6 +39,20 @@ constexpr std::uint8_t kCountProxiesMini     = 4;
 constexpr std::uint8_t kConnObjectIdxMini    = 2;
 constexpr std::uint8_t kConnObjectBoneMini   = 3;
 
+// 0x603 (proxy) mini-chunk IDs, per Mike Lankamp's alamo2max.ms:584+.
+// Mini-chunks 7 and 8 are optional -- vanilla content omits them when
+// their boolean value is default-false, and Mike's reader treats them
+// as a tail of optional types ending in the -1 end-marker.
+constexpr std::uint8_t kProxyNameMini             = 5;
+constexpr std::uint8_t kProxyBoneMini             = 6;
+constexpr std::uint8_t kProxyIsHiddenMini         = 7;  // optional
+constexpr std::uint8_t kProxyAltDecStayHiddenMini = 8;  // optional
+
+// 0x1302 light-data payload is exactly 36 bytes:
+//   u32 type, 3*f32 color, f32 intensity, f32 atten_end,
+//   f32 atten_start, f32 hotspot, f32 falloff.
+constexpr std::size_t kLightDataBytes = 36;
+
 // ---- Helpers --------------------------------------------------------------
 
 ChunkNode make_leaf(std::uint32_t id, std::vector<std::uint8_t> payload) {
@@ -397,40 +411,107 @@ ChunkNode build_mesh(const ExportMesh& mesh) {
     return make_container(0x400, std::move(kids));
 }
 
+// ---- Lights (Phase 7a) ----------------------------------------------------
+
+ChunkNode build_light_name(const std::string& name) {
+    std::vector<std::uint8_t> p;
+    append_cstring(p, name);
+    return make_leaf(0x1301, std::move(p));
+}
+
+ChunkNode build_light_data(const ExportLight& light) {
+    std::vector<std::uint8_t> p;
+    p.reserve(kLightDataBytes);
+    append_u32(p, static_cast<std::uint32_t>(light.type));
+    append_f32(p, light.color[0]);
+    append_f32(p, light.color[1]);
+    append_f32(p, light.color[2]);
+    append_f32(p, light.intensity);
+    append_f32(p, light.atten_end);    // farAttenuationEnd  (Mike: GetFloat #4)
+    append_f32(p, light.atten_start);  // farAttenuationStart (Mike: GetFloat #5)
+    append_f32(p, light.hotspot);
+    append_f32(p, light.falloff);
+    return make_leaf(0x1302, std::move(p));
+}
+
+ChunkNode build_light(const ExportLight& light) {
+    std::vector<ChunkNode> kids;
+    kids.push_back(build_light_name(light.name));
+    kids.push_back(build_light_data(light));
+    return make_container(0x1300, std::move(kids));
+}
+
+// ---- Proxies (Phase 7a) ---------------------------------------------------
+
+// Append a mini-chunk: 1-byte type + 1-byte size + payload bytes.
+void append_mini_u32(std::vector<std::uint8_t>& p, std::uint8_t type, std::uint32_t v) {
+    p.push_back(type);
+    p.push_back(4);
+    append_u32(p, v);
+}
+
+ChunkNode build_proxy(const ExportProxy& proxy) {
+    std::vector<std::uint8_t> p;
+    // Required: name + bone.
+    p.push_back(kProxyNameMini);
+    p.push_back(static_cast<std::uint8_t>(proxy.name.size() + 1));
+    append_cstring(p, proxy.name);
+    append_mini_u32(p, kProxyBoneMini, proxy.bone_index);
+    // Optional: is_hidden, alt_decrease_stay_hidden. Vanilla content
+    // omits both when default-false; Mike's reader treats each as an
+    // optional run before the -1 end marker.
+    if (proxy.is_hidden) {
+        append_mini_u32(p, kProxyIsHiddenMini, 1u);
+    }
+    if (proxy.alt_decrease_stay_hidden) {
+        append_mini_u32(p, kProxyAltDecStayHiddenMini, 1u);
+    }
+    return make_leaf(0x603, std::move(p));
+}
+
 // ---- Connections ----------------------------------------------------------
 
 ChunkNode build_connections(const ExportScene& scene) {
     std::vector<ChunkNode> kids;
 
-    // 0x601: counts.
+    // 0x601: counts. nConnections = meshes + lights (each is a
+    // "connection object" with its own 0x602 entry). nProxies =
+    // scene.proxies.size(). Phase 7a is the first time these can
+    // be non-zero or non-meshes; Phase 4 hard-coded both as
+    // (meshes.size(), 0).
+    const std::uint32_t n_connections =
+        static_cast<std::uint32_t>(scene.meshes.size() + scene.lights.size());
+    const std::uint32_t n_proxies =
+        static_cast<std::uint32_t>(scene.proxies.size());
     {
         std::vector<std::uint8_t> p;
-        // mini 1: nConnections.
-        p.push_back(kCountConnectionsMini);
-        p.push_back(4);
-        append_u32(p, static_cast<std::uint32_t>(scene.meshes.size()));
-        // mini 4: nProxies = 0 (Phase 4 emits no proxies).
-        p.push_back(kCountProxiesMini);
-        p.push_back(4);
-        append_u32(p, 0u);
+        append_mini_u32(p, kCountConnectionsMini, n_connections);
+        append_mini_u32(p, kCountProxiesMini,     n_proxies);
         kids.push_back(make_leaf(0x601, std::move(p)));
     }
 
     // 0x602: per-object connection. Object index = position in
-    // (meshes ++ lights). Phase 4 has no lights, so it's just the
-    // mesh index. Bone index comes from mesh.bone_index (set by the
-    // walker to the per-mesh attachment bone, never 0=Root).
-    for (std::size_t i = 0; i < scene.meshes.size(); ++i) {
+    // (meshes ++ lights), monotonically increasing. Bone index
+    // comes from each object's bone_index (set by the walker to
+    // the per-object attachment bone, never 0=Root for static
+    // meshes; per Phase 5b skinned meshes connect to Root=0).
+    std::uint32_t obj_idx = 0;
+    for (const auto& m : scene.meshes) {
         std::vector<std::uint8_t> p;
-        // mini 2: object index.
-        p.push_back(kConnObjectIdxMini);
-        p.push_back(4);
-        append_u32(p, static_cast<std::uint32_t>(i));
-        // mini 3: bone index.
-        p.push_back(kConnObjectBoneMini);
-        p.push_back(4);
-        append_u32(p, scene.meshes[i].bone_index);
+        append_mini_u32(p, kConnObjectIdxMini,  obj_idx++);
+        append_mini_u32(p, kConnObjectBoneMini, m.bone_index);
         kids.push_back(make_leaf(0x602, std::move(p)));
+    }
+    for (const auto& l : scene.lights) {
+        std::vector<std::uint8_t> p;
+        append_mini_u32(p, kConnObjectIdxMini,  obj_idx++);
+        append_mini_u32(p, kConnObjectBoneMini, l.bone_index);
+        kids.push_back(make_leaf(0x602, std::move(p)));
+    }
+
+    // 0x603: proxies (tail of 0x600).
+    for (const auto& proxy : scene.proxies) {
+        kids.push_back(build_proxy(proxy));
     }
 
     return make_container(0x600, std::move(kids));
@@ -443,6 +524,13 @@ std::vector<ChunkNode> build_alo(const ExportScene& scene) {
     top.push_back(build_skeleton(scene.bones));
     for (const auto& mesh : scene.meshes) {
         top.push_back(build_mesh(mesh));
+    }
+    // Phase 7a: lights are top-level siblings of meshes, between
+    // 0x400 meshes and 0x600 connections (per vanilla
+    // EB_ICC_LANDINGPAD.ALO inspection; Mike's reader reads them
+    // in this slot too).
+    for (const auto& light : scene.lights) {
+        top.push_back(build_light(light));
     }
     top.push_back(build_connections(scene));
     return top;
