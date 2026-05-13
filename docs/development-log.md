@@ -40,14 +40,14 @@ Single-file project status + history. Open this first when picking up a new sess
 | 7b.2 | Walker: Spotlight + `.Target` sibling bone | ✅ shipped | TSpot / FSpot emit as Spotlight (type=2); TargetSpot also emits a sibling `<name>.Target` bone at `INode::GetTarget()`'s world TM (matches vanilla EB_ICC_LANDINGPAD pattern). Empirically confirmed: IGameProperty returns Max-UI **degrees** for cone angles, walker converts to radians for disk format. |
 | 7c.1 | `Alamo_Proxy` helper plugin class registered | ✅ shipped | Faithful clone of the legacy PG Max-9 plugin's helper: appears under Create > Helpers > Standard > Alamo Proxy. Stable `Class_ID(0x6ed3a4f1, 0x8a721d04)`. `NonLocalizedClassName` / `InternalName` "Alamo_Proxy" matches Mike Lankamp's `alamo2max.ms:1344` so his importer reaches us. Walker side is 7c.2. |
 | 7c.2 | Walker: `Alamo_Proxy` instances → ExportProxy + harness tests | ✅ shipped | `walk_proxies` detects helpers by `Class_ID == kAlamoProxyClassID` (not name prefix); emits per-proxy synth bone + ExportProxy; reads `Alamo_Geometry_Hidden` (fallback to `IsNodeHidden()`) and `Alamo_Alt_Decrease_Stay_Hidden`; mutex with Phase 5e helpers-as-bones; 5 new harness tests; `.export.log` Proxies summary. |
-| 7d | Acceptance: full integration test (skinned mesh + bones + lights + proxies) | ⏭ next | Multi-feature scene proves the whole Phase 7 surface holds together in one file. |
+| 7d | Acceptance: full integration test (skinned mesh + bones + lights + proxies) | ✅ shipped | `test_phase7_acceptance` combines 2 real bones + helper-as-bone + skinned cylinder + static box + Omni + TargetSpot + 2 proxies in one scene (10 bones / 2 meshes / 2 lights / 2 proxies / 4 connections). Tier 1 strict clean, Tier 2 byte-identical, Tier 3 verifier with **31 interaction-shaped assertions** across 8 groups (skeleton/mutex/wiring/lights/proxies/connections/matrices/log) all pass; 3× byte-identical determinism (SHA `56FCEAF0…`); 24/24 harness, 60/60 unit, 2066/2066 corpus; tripwires confirm assertions actually bite. |
 | Utility UI | Faithful clone of the legacy PG Alamo Utility panel | ✅ shipped | Three rollouts (Node Export Options / Quick Selection / Animation Settings) appear under Utilities > More... > Alamo Utility; checkboxes/radios round-trip Alamo_* user properties on the selected node |
 | 6a | Effects11 shader stubs for Max 2026 | ✅ shipped | [PR #18](https://github.com/DrKnickers/max2alamo-2026/pull/18) — all 39 PG shaders load in Max 2026's DXSM with PG parameter UIs |
 | 6b | Per-vertex tangent + binormal export | ✅ shipped | [PR #19](https://github.com/DrKnickers/max2alamo-2026/pull/19) — MikkT via `IGameMesh::GetFaceVertexTangentBinormal`; bump shading works |
 | 6c | Per-material parameter export | ✅ shipped | [PR #20](https://github.com/DrKnickers/max2alamo-2026/pull/20) + [#22](https://github.com/DrKnickers/max2alamo-2026/pull/22) — DXMaterial ParamBlock → typed `0x10103/6` chunks; float3 alpha=0 convention |
 | 6d | Coord-frame banner in `.export.log` | ✅ shipped | [PR #21](https://github.com/DrKnickers/max2alamo-2026/pull/21) — every export documents `Z up, -Y forward, +X right` |
 | Test harness | Max-side regression suite | ✅ shipped | [PR #23](https://github.com/DrKnickers/max2alamo-2026/pull/23) + [#26](https://github.com/DrKnickers/max2alamo-2026/pull/26) — `scripts/run-max-tests.ps1` runs 6 end-to-end tests via `3dsmaxbatch` |
-| 7 | Lights, hardpoints, proxies | pending | Fighter exports with working hardpoints in EaW |
+| 7 | Lights, hardpoints, proxies | ✅ shipped | Format library + walker + helper plugin class all in place; 24/24 harness covers Omni/Directional/Spotlight/`.Target`/proxies/flags + the 7d full-scene integration. In-game fighter Tier 4 deferred to Phase 8/9. |
 | 8 | Animation export incl. visibility tracks | pending | Walk cycle + animated visibility play correctly in-game |
 | 9 | Polish + v1 release | pending | v1.0 tag with `.dle` published via GitHub Releases |
 
@@ -304,7 +304,7 @@ scripts/
 
 `powershell -File scripts/run-max-tests.ps1` discovers every `tests/maxscript/test_*.ms`, runs each through 3dsmaxbatch when its cached output is stale (or the installed `.dle` is newer), dispatches the paired Python verifier, and reports pass/fail. Timestamp-based caching saves the ~25-second Max boot per test on no-op runs.
 
-Current coverage (6 tests, all green):
+Current coverage (24 tests, all green):
 
 | Test | Pins behaviour from |
 |---|---|
@@ -331,6 +331,7 @@ Current coverage (6 tests, all green):
 | `test_proxy_with_flags` | Phase 7c.2 — 4 proxies x 2 optional flags (`Alamo_Geometry_Hidden`, `Alamo_Alt_Decrease_Stay_Hidden`) round-trip |
 | `test_proxy_mesh_light_combined` | Phase 7c.2 — mesh + light + proxies coexist; connection table covers mesh + light only, proxies have their own 0x603 chunks |
 | `test_proxy_mutex_helper_as_bone` | Phase 7c.2 — Alamo_Proxy detection wins over `Alamo_Export_Transform`; non-proxy helpers still respect Phase 5e |
+| `test_phase7_acceptance` | Phase 7d — multi-feature acceptance: skinned cylinder + 2-bone chain + helper-as-bone + static box + Omni + TargetSpot + 2 proxies in one scene; **31 interaction-shaped assertions** across 8 groups (skeleton composition, mutex enforcement, mesh wiring, lights, proxies, connection accounting, bone-matrix orthonormality, `.export.log` cross-check) |
 
 The harness is **not CI-runnable** (needs Max install + license seat). It's an on-demand local tool; CI keeps the format-library tests.
 
@@ -442,13 +443,42 @@ Verified along the way: our writer always emits `0x206` bone chunks (Phase 4c co
 
 **Conclusion:** Three of the four props have nothing for the walker to do today. The fourth is a proxy-chunk field that belongs with the proxy work in Phase 7. Closing out the Phase 5 series here.
 
-### Phase 7 — Lights, hardpoints, proxies (next)
+### Phase 7 — Lights + proxies (shipped)
 
-`0x1300` light containers (with `0x1301` name + `0x1302` data: type, RGB, intensity, atten, hotspot, falloff). Helper-object naming convention: any non-mesh, non-bone Max dummy named `HP_*` (or any helper marked as a proxy via convention) becomes a `0x603` proxy chunk in connections.
+Format library: `0x1300` light containers (`0x1301` name + `0x1302` data: type, RGB, intensity, atten, hotspot, falloff) and `0x603` proxy chunks (mini 5/6/7/8). Walker: `walk_lights` emits per-light synth bones + ExportLight from IGAME_LIGHT (Omni/Directional/Spotlight, with `.Target` sibling bone for TargetSpot); `walk_proxies` detects helpers by `Class_ID == kAlamoProxyClassID` (not name prefix — proxies are explicit `Alamo_Proxy` instances, registered in 7c.1).
 
-**Phase 5f follow-through:** the 0x603 chunk's mini-chunk type 8 (`altDecreaseStayHidden`) now has a known mapping — reads from `Alamo_Alt_Decrease_Stay_Hidden` on the node, writes as a u32 boolean.
+Closed across 7a (format-lib builders + 9 unit tests), 7b.1/7b.2 (lights walker + 6 harness tests), 7c.1 (helper plugin class registered), 7c.2 (proxies walker + 5 harness tests), and 7d (full integration acceptance).
 
-Acceptance: a fighter exported with `HP_Weapon_*` dummies has working hardpoints in EaW (weapons fire from the correct positions in-game).
+**In-game acceptance** (Tier 4) — a real fighter exported with `Alamo_Proxy` hardpoint helpers firing weapons in EaW — is the remaining proof outside the harness. Deferred to Phase 8/9 when a full asset is available; the harness coverage is sufficient to land Phase 7 as shipped.
+
+### Phase 7d — Full integration acceptance (shipped)
+
+One new harness test — `test_phase7_acceptance` + `verify_test_phase7_acceptance.py` — that authors a single Max scene combining every Phase 4..7 surface (skinned cylinder over a 2-bone chain, helper-as-bone, static box, Omni light, TargetSpot with `.Target` sibling, two `Alamo_Proxy` helpers with and without `Alamo_Geometry_Hidden`) and asserts the interaction invariants no per-feature test can cover. Scope is deliberately measurement-only: no walker or format-library changes, no new Tier 1 invariants, no replication of per-feature deep-dives.
+
+Scene shape on disk: **10 bones** (Root + B0/B1 + ExportedPivot + StaticBox + OmniMain + SpotMain + SpotMain.Target + p_alpha + p_beta), **2 meshes** (skinned `SkinCyl` connecting to Root, static `StaticBox` connecting to its own attachment bone), **2 lights** (Omni + Spotlight; specifically no Directional), **2 proxies** (mini 5+6 for p_alpha, mini 5+6+7 for p_beta), **4 connections** (meshes + lights only; proxies live in `0x603`).
+
+Verifier covers **31 assertions across 8 groups**:
+
+- **A** — Skeleton composition + topology (#1–#6)
+- **B** — Mutex enforcement under load (#7–#9): proxy/light names appear exactly once in bones; ExportedPivot doesn't leak into lights/proxies/meshes
+- **C** — Mesh wiring (#10–#15): skinned-to-Root vs static-to-attachment; multi-bone influence on the joint; tightened weight-sum precision (1e-4); NaN/Inf sweep
+- **D** — Lights (#16–#20): type set `[0, 2]`; `SpotMain.Target` at the target's authored position; cone in radians with `hotspot ≤ falloff ≤ π`
+- **E** — Proxies (#21–#24): flag round-trip; synthetic-bone naming invariant; proxies *not* in the connection table
+- **F** — Connection table accounting (#25–#28): count = 4; object_index permutation; bone_index resolves; only `SkinCyl` allowed to connect to Root
+- **G** — Bone-matrix numeric correctness (#29–#30): authored-position round-trip within 1e-3 for all 7 source nodes; orthonormality (unit columns, pairwise orthogonal, positive determinant)
+- **H** — Cross-source consistency (#31): `.export.log` summary counts and flag values agree with parsed binary
+
+Verification layers run before sign-off:
+
+1. **Tier 1 strict** (`validate_alo.py`) — clean.
+2. **Tier 2 round-trip** (`alo_roundtrip.exe`) — byte-identical, 70709 bytes.
+3. **Tier 3 bespoke verifier** — 31/31 assertions pass.
+4. **3× determinism** — three back-to-back Max boots produce identical SHA-256 `56FCEAF02E3D043E46A4BB90818EC22C9A814D0E55CC94D27A6464961A789CC3`.
+5. **`alo_dump` stability** — three runs produce identical content (post-header).
+6. **Full harness 24/24, format-lib unit tests 60/60, corpus sweep 2066/2066.**
+7. **Negative tripwires** — three deliberate breakages (drop hidden flag, rename a bone, move a light) each fire their expected single assertion (#22, #1, #29). Confirms the verifier actually bites.
+
+The tripwires are documented but not committed — they live only as a dev-time validation step. The acceptance test stands on its own as a regression guard against any future change that breaks the multi-feature interaction surface.
 
 ### Phase 6e (optional polish) — Walker-side `.export.log` consistency
 
