@@ -32,7 +32,8 @@ Single-file project status + history. Open this first when picking up a new sess
 | 5a | Real bone hierarchy + local matrices | ✅ shipped | [PR #24](https://github.com/DrKnickers/max2alamo-2026/pull/24) — `IGAME_BONE` walk with `GetLocalTM`; verified by `test_bone_hierarchy.ms` |
 | 5b | Single-bone skinning via IGameSkin | ✅ shipped | [PR #25](https://github.com/DrKnickers/max2alamo-2026/pull/25) — skinned cylinder exports with per-vertex dominant-bone refs; connects to Root |
 | 5c | Multi-bone weighted skinning | ✅ shipped | smooth-painted joint splits 50/50 between flanking bones with weights summing to 1.0; verified by `test_smooth_skinned_joint.ms` |
-| 5d | `Alamo_*` user-property family (Billboard_Mode, etc.) | ⏭ next | Property-driven mesh attributes survive export |
+| 5d | `Alamo_*` user-property family (Billboard_Mode, etc.) | partial | Authoring UI shipped (Utility command-panel rollouts); walker read-side pending |
+| Utility UI | Faithful clone of the legacy PG Alamo Utility panel | ✅ shipped | Three rollouts (Node Export Options / Quick Selection / Animation Settings) appear under Utilities > More... > Alamo Utility; checkboxes/radios round-trip Alamo_* user properties on the selected node |
 | 6a | Effects11 shader stubs for Max 2026 | ✅ shipped | [PR #18](https://github.com/DrKnickers/max2alamo-2026/pull/18) — all 39 PG shaders load in Max 2026's DXSM with PG parameter UIs |
 | 6b | Per-vertex tangent + binormal export | ✅ shipped | [PR #19](https://github.com/DrKnickers/max2alamo-2026/pull/19) — MikkT via `IGameMesh::GetFaceVertexTangentBinormal`; bump shading works |
 | 6c | Per-material parameter export | ✅ shipped | [PR #20](https://github.com/DrKnickers/max2alamo-2026/pull/20) + [#22](https://github.com/DrKnickers/max2alamo-2026/pull/22) — DXMaterial ParamBlock → typed `0x10103/6` chunks; float3 alpha=0 convention |
@@ -81,8 +82,8 @@ Wiki / Discussions / Projects are disabled.
 | Format library sources | `alamo_format/src/` |
 | Format library tests | `alamo_format/tests/` (Catch2 v3 via FetchContent) |
 | Standalone CLIs | `tools/alo_dump/`, `tools/alo_roundtrip/`, `tools/alo_synth/` (synth `.alo` from a hard-coded `ExportScene`) |
-| Max plugin sources | `max2alamo/src/` |
-| Max plugin resources | `max2alamo/resources/` (.def, .rc) |
+| Max plugin sources | `max2alamo/src/` (incl. `alamo_utility.cpp` for the command-panel Utility) |
+| Max plugin resources | `max2alamo/resources/` (.def, .rc, `utility_dialogs.rc` + `utility_resource.h` for the Utility's 3 rollout templates) |
 | Max-side test harness | `tests/maxscript/test_*.ms` scenes + `tests/maxscript/verify/verify_test_*.py` assertions + `tests/maxscript/verify/_alo.py` parser library |
 | Max-side test runner | `scripts/run-max-tests.ps1` (dispatches `3dsmaxbatch.exe` per test, runs paired Python verifier) |
 | Effects11 shader stubs | `shaders/max-preview/*.fx` (39 files, regenerated from a manifest by `scripts/generate-max-preview-stubs.py`) |
@@ -358,7 +359,25 @@ Generalises Phase 5b's "dominant bone, weight = 1.0" path to read every (bone, w
 
 ## Future phase plans
 
-### Phase 5d — `Alamo_*` user-property family
+### Authoring UI — Alamo Utility command panel (shipped)
+
+Faithful clone of the legacy Petroglyph max2alamo Utility UI: three rollouts that appear under the command panel's Utilities tab > More... > Alamo Utility, matching the original Max 8/9 plugin screenshot pixel-for-pixel where dialog units allow.
+
+**Why it lives separately from `AloExport`:** Max plugins can expose multiple class types from one `.dle`; SceneExport drives File → Export, while `UtilityObj` drives the command-panel rollouts. The same DLL exposes both via `LibClassDesc` indexing, so users get one install path. The Utility has its own stable `Class_ID(0x6ed3a4f1, 0x4f51ab63)` (distinct from the SceneExport's) — once shipped this must never change since Max persists Utility-class references in scenes that have ever opened the panel.
+
+| Rollout | Controls | Behaviour |
+|---|---|---|
+| Node Export Options | `Export Transform`, `Is "Extra" Bone`, Billboarding radios (Disable / Parallel / Face / ZAxis View / ZAxis Light / ZAxis Wind / Sunlight Glow / Sun) + help button, `Export Geometry`, `Enable Collision`, `Hidden`, `Alt Dec Stay Hidden` | Toggles ↔ `Alamo_*` user properties on the currently-selected INode. Selection change refreshes state. Parent/child enable-disable matches the screenshot (Is-Extra-Bone gated by Export Transform; collision/hidden/alt-dec gated by Export Geometry; billboard radios gated by Export Transform). |
+| Quick Selection Utility | `Export Transform`, `Export Geometry`, `Enable Collision` buttons + LOD/Alt spinners with help | Each button selects every node in the scene whose corresponding property is set. LOD/Alt spinners select every node whose `Alamo_LOD` / `Alamo_Alt` matches the spinner value. |
+| Animation Settings | Anim Name combo (seeded with `-- none --`), Start/End spinners, `<<` `Add` `Del` `>>` nav buttons, `Display Current` / `Display All` | UI present but disabled — the named-clip backend lands with the Phase 8 `.ala` writer. Visual fidelity is the goal here so the panel matches the screenshot. |
+
+Implementation: `max2alamo/src/alamo_utility.{h,cpp}` (UtilityObj subclass, ClassDesc, three DLGPROCs + helpers); `max2alamo/resources/utility_dialogs.rc` (three dialog templates, 108 dialog-units wide = standard command-panel column); `max2alamo/resources/utility_resource.h` (control IDs). `plugin_entry.cpp` bumped `LibNumberClasses` from 1 to 2 and routes index 1 to the new ClassDesc.
+
+The walker still ignores `Alamo_*` user props on read at export time — that's Phase 5d work. Until then the panel writes the props but nothing downstream consumes them (other than the `Alamo_Shader_Name` override which has been read since Phase 4c).
+
+### Phase 5d — `Alamo_*` user-property family (next)
+
+Walker-side read of the user props the new Utility panel now writes. Scope:
 
 Read remaining legacy user props that the corpus survey identified: `Alamo_Billboard_Mode` (→ select 0x205 vs 0x206 chunk variant or set `billboard_mode != 0`), `Alamo_Export_Transform` (mark a Helper / Dummy as an exportable bone, complementing the IGAME_BONE auto-detection in 5a), `Alamo_Geometry_Hidden` / `Alamo_Collision_Enabled` (mesh-level flags), `Alamo_Alt_Decrease_Stay_Hidden`. Small scope: one read per prop, write into `ExportBone` / `ExportMesh`. Coverage test via the harness.
 
