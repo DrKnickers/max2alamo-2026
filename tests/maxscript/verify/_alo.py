@@ -126,6 +126,148 @@ class Alo:
         return None
 
 
+# ---------- Tier 1 universal invariant validator ---------------------------
+
+# Tolerances for floating-point comparisons. Tightened iteratively as new
+# tests confirm the writer + walker hold to specific bounds.
+_NORMAL_LEN_TOL    = 1e-3   # vertex normal unit-length deviation
+_TANGENT_LEN_TOL   = 1e-3   # tangent/binormal unit-length deviation
+# |dot(tangent, normal)| upper bound. MikkT-averaged tangents on smooth-
+# shaded surfaces (spheres especially) drift ~0.05 from exact
+# perpendicularity at the worst vertices, while the original Phase 6b
+# "wrong tangent index" bug surfaced as 0.39. 0.15 sits comfortably
+# between -- catches real corruption, accepts legitimate drift.
+_TANGENT_PERP_TOL  = 0.15
+_WEIGHT_SUM_TOL    = 1e-3   # per-vertex skin-weight sum deviation from 1.0
+
+
+def _is_unit(v, tol):
+    """True if `v` is a 3-tuple whose magnitude is ~1 OR exactly 0 (the
+    'absent' sentinel the writer emits when no tangent data was available)."""
+    mag = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) ** 0.5
+    if mag < 1e-6:
+        return True   # all-zero default (absent); not a violation
+    return abs(mag - 1.0) < tol
+
+
+def _dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def validate(alo: "Alo") -> List[str]:
+    """Universal Tier-1 invariant check. Returns a list of human-readable
+    violation strings; empty list means the file passes every universal
+    check the alamo_format library is supposed to guarantee.
+
+    Test-specific verifiers should call this BEFORE their own assertions
+    so structural problems surface with a clear diagnosis rather than
+    cascading into confusing test-specific failures."""
+    errors: List[str] = []
+
+    # ---- Skeleton invariants ------------------------------------------
+    if not alo.bones:
+        errors.append("skeleton: no bones in export (every .alo needs at "
+                      "least the synthetic Root bone)")
+        return errors  # everything below assumes bones exist
+
+    root = alo.bones[0]
+    if root.name != "Root":
+        errors.append(f"skeleton: bones[0] should be the synthetic 'Root' "
+                      f"sentinel, got {root.name!r}")
+    if root.parent_index != 0xFFFFFFFF:
+        errors.append(f"skeleton: Root parent_index should be 0xFFFFFFFF, "
+                      f"got 0x{root.parent_index:08X}")
+
+    for i, b in enumerate(alo.bones):
+        if not b.name:
+            errors.append(f"skeleton: bones[{i}] has empty name")
+        if "\x00" in b.name:
+            errors.append(f"skeleton: bones[{i}] name {b.name!r} has embedded null")
+        if b.billboard_mode > 7:
+            errors.append(f"skeleton: bones[{i}] ({b.name!r}) billboard_mode "
+                          f"{b.billboard_mode} out of range [0, 7]")
+        # Parents must point at a strictly earlier bone (topological order),
+        # except for Root's 0xFFFFFFFF sentinel.
+        if i > 0:
+            if b.parent_index == 0xFFFFFFFF:
+                errors.append(f"skeleton: bones[{i}] ({b.name!r}) has the "
+                              f"no-parent sentinel but isn't Root")
+            elif b.parent_index >= i:
+                errors.append(f"skeleton: bones[{i}] ({b.name!r}) parent_index "
+                              f"{b.parent_index} not topologically sorted "
+                              f"(must be < {i})")
+
+    # ---- Mesh invariants ----------------------------------------------
+    for mi, m in enumerate(alo.meshes):
+        if not m.submeshes:
+            errors.append(f"mesh[{mi}] ({m.name!r}): no submeshes")
+            continue
+        for si, sm in enumerate(m.submeshes):
+            tag = f"mesh[{mi}].submesh[{si}] ({m.name!r})"
+            n_verts = len(sm.vertices)
+            n_idx = len(sm.indices)
+            if n_idx % 3 != 0:
+                errors.append(f"{tag}: index count {n_idx} is not a multiple of 3")
+            for ii, idx in enumerate(sm.indices):
+                if idx >= n_verts:
+                    errors.append(f"{tag}: indices[{ii}]={idx} >= "
+                                  f"vertex count {n_verts}")
+                    break  # one report per submesh is enough
+            for vi, v in enumerate(sm.vertices):
+                if not _is_unit(v.normal, _NORMAL_LEN_TOL):
+                    errors.append(f"{tag}: vert[{vi}] normal {v.normal} "
+                                  f"not unit length")
+                    break
+                if not _is_unit(v.tangent, _TANGENT_LEN_TOL):
+                    errors.append(f"{tag}: vert[{vi}] tangent {v.tangent} "
+                                  f"not unit length (and not the zero sentinel)")
+                    break
+                if not _is_unit(v.binormal, _TANGENT_LEN_TOL):
+                    errors.append(f"{tag}: vert[{vi}] binormal {v.binormal} "
+                                  f"not unit length (and not the zero sentinel)")
+                    break
+                # Tangent should be ~perpendicular to normal when both are
+                # non-zero; allow some slack for MikkT vs Lengyel drift.
+                tmag = sum(c * c for c in v.tangent) ** 0.5
+                if tmag > 1e-6 and abs(_dot(v.tangent, v.normal)) > _TANGENT_PERP_TOL:
+                    errors.append(f"{tag}: vert[{vi}] tangent not perpendicular "
+                                  f"to normal (|dot|={abs(_dot(v.tangent, v.normal)):.3f} "
+                                  f"> {_TANGENT_PERP_TOL})")
+                    break
+
+                # Skinning invariants per vertex.
+                wsum = sum(v.weights)
+                if abs(wsum - 1.0) > _WEIGHT_SUM_TOL:
+                    errors.append(f"{tag}: vert[{vi}] weights sum to "
+                                  f"{wsum:.6f}, expected 1.0 (±{_WEIGHT_SUM_TOL})")
+                    break
+                for slot in range(4):
+                    if v.weights[slot] < 0.0:
+                        errors.append(f"{tag}: vert[{vi}] weights[{slot}]="
+                                      f"{v.weights[slot]} is negative")
+                        break
+                    if v.bone_indices[slot] >= len(alo.bones):
+                        errors.append(f"{tag}: vert[{vi}] bone_indices[{slot}]="
+                                      f"{v.bone_indices[slot]} >= bone count "
+                                      f"{len(alo.bones)}")
+                        break
+
+    # ---- Connection invariants ----------------------------------------
+    if len(alo.connections) != len(alo.meshes):
+        errors.append(f"connections: count {len(alo.connections)} != mesh "
+                      f"count {len(alo.meshes)} (each mesh should have one "
+                      f"0x602 connection)")
+    for ci, c in enumerate(alo.connections):
+        if c.bone_index >= len(alo.bones):
+            errors.append(f"connections[{ci}]: bone_index {c.bone_index} >= "
+                          f"bone count {len(alo.bones)}")
+        if c.object_index >= len(alo.meshes):
+            errors.append(f"connections[{ci}]: object_index {c.object_index} "
+                          f">= mesh count {len(alo.meshes)}")
+
+    return errors
+
+
 # ---------- chunk-tree walker ----------------------------------------------
 
 def _walk(data: bytes, start: int, end: int):
