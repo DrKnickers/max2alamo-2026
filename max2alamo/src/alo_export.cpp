@@ -114,8 +114,9 @@ int AloExport::DoExport(const TCHAR*  name,
         report((std::wstring(L"Scene walk failed:\n\n") + wmsg).c_str(), MB_ICONERROR);
         return IMPEXP_FAIL;
     }
-    if (scene.meshes.empty()) {
-        report(_T("Nothing to export: no exportable mesh nodes were found in the scene."),
+    if (scene.meshes.empty() && scene.lights.empty() && scene.proxies.empty()) {
+        report(_T("Nothing to export: no exportable mesh, light, or proxy nodes "
+                  "were found in the scene."),
                MB_ICONWARNING);
         return IMPEXP_FAIL;
     }
@@ -160,6 +161,7 @@ int AloExport::DoExport(const TCHAR*  name,
     {
         std::string log;
         log_material_diagnostics(i, log);
+        log_scene_summary(scene, log);
         std::wstring log_path = std::wstring(name) + L".export.log";
         std::ofstream lf(log_path, std::ios::binary | std::ios::trunc);
         if (lf) lf.write(log.data(), static_cast<std::streamsize>(log.size()));

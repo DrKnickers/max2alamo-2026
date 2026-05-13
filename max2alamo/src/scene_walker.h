@@ -34,4 +34,10 @@ bool walk_scene(Interface*                  max_interface,
 // texture?" questions.
 void log_material_diagnostics(Interface* max_interface, std::string& out_log);
 
+// Phase 7b.1: append a summary of the just-walked ExportScene (mesh /
+// light / proxy counts + per-light field dump) to the .export.log.
+// Driven from the ExportScene rather than the live Max scene so the
+// numbers in the log match exactly what got written to disk.
+void log_scene_summary(const alamo_format::ExportScene& scene, std::string& out_log);
+
 }  // namespace max2alamo

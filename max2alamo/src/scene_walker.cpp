@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -600,6 +601,115 @@ void walk_bones(IGameNode* node, std::uint32_t parent_bone_idx,
     }
 }
 
+// Phase 7b.1: light walker. Recursively walks the scene; for each
+// IGAME_LIGHT node of supported type (Omni / Directional), pulls the
+// light's properties via IGameLight + IGameProperty, encodes a
+// synthetic per-light bone (matching the per-mesh-bone convention
+// from Phase 4c), and pushes an ExportLight into the scene.
+//
+// Spotlights (IGAME_TSPOT / IGAME_FSPOT) need a sibling `.Target`
+// bone to encode their orientation; that lands in 7b.2.
+
+// IGameLight::LightType -> ExportLight::Type mapping. Returns
+// std::nullopt for types we don't export yet.
+std::optional<alamo_format::ExportLight::Type>
+classify_light(IGameLight::LightType t)
+{
+    switch (t) {
+    case IGameLight::IGAME_OMNI:
+        return alamo_format::ExportLight::Type::Omni;
+    case IGameLight::IGAME_DIR:
+    case IGameLight::IGAME_TDIR:
+        return alamo_format::ExportLight::Type::Directional;
+    case IGameLight::IGAME_TSPOT:
+    case IGameLight::IGAME_FSPOT:
+        // Spotlights deferred to Phase 7b.2 -- they need .Target bone
+        // emission to encode orientation, which the current walker
+        // doesn't yet do.
+        return std::nullopt;
+    default:
+        return std::nullopt;
+    }
+}
+
+// Helpers to pull a static (frame-0) value out of an IGameProperty,
+// returning the provided default if the property is missing or its
+// declared data type doesn't match.
+float read_light_float(IGameProperty* prop, float dflt = 0.f)
+{
+    if (!prop) return dflt;
+    float v = dflt;
+    if (!prop->GetPropertyValue(v)) return dflt;
+    return v;
+}
+
+void read_light_color(IGameProperty* prop, std::array<float, 3>& out)
+{
+    if (!prop) return;
+    Point3 p;
+    if (prop->GetPropertyValue(p)) {
+        // Max colors are stored 0..1 in IGameProperty (despite the UI
+        // showing 0..255). No gamma conversion -- vanilla content uses
+        // the raw values; the engine matches.
+        out = {p.x, p.y, p.z};
+    }
+}
+
+// Pulls every IGAME_LIGHT node in the scene (via IGame's typed
+// lookup, which sidesteps the question of whether lights appear
+// in the top-level traversal) and emits an ExportLight + synth
+// bone for each Omni / Directional. Spotlights are skipped this
+// phase (7b.2 will add them with their target-bone partner).
+void walk_lights(IGameScene* igame, alamo_format::ExportScene& scene)
+{
+    if (!igame) return;
+    Tab<IGameNode*> light_nodes =
+        igame->GetIGameNodeByType(IGameObject::IGAME_LIGHT);
+
+    for (int i = 0; i < light_nodes.Count(); ++i) {
+        IGameNode* node = light_nodes[i];
+        if (!node) continue;
+        IGameObject* obj = node->GetIGameObject();
+        if (!obj) continue;
+
+        auto* gl = static_cast<IGameLight*>(obj);
+        const auto kind = classify_light(gl->GetLightType());
+        if (!kind.has_value()) {
+            node->ReleaseIGameObject();
+            continue;
+        }
+
+        alamo_format::ExportLight light;
+        light.name = to_utf8(node->GetName());
+        light.type = *kind;
+        read_light_color(gl->GetLightColor(), light.color);
+        light.intensity   = read_light_float(gl->GetLightMultiplier(), 1.f);
+        light.atten_end   = read_light_float(gl->GetLightAttenEnd(),   0.f);
+        light.atten_start = read_light_float(gl->GetLightAttenStart(), 0.f);
+        // hotspot/falloff stay 0 for Omni / Directional. They
+        // become meaningful in 7b.2 for spotlights.
+        light.hotspot = 0.f;
+        light.falloff = 0.f;
+
+        // Synthetic per-light bone (Phase 4c pattern). Name matches
+        // the light so Mike's importer reconstructs them as paired
+        // objects, and the .alo's connections can index into
+        // scene.bones for the attachment.
+        alamo_format::ExportBone synth_bone;
+        synth_bone.name           = light.name;
+        synth_bone.parent_index   = 0;  // child of Root
+        synth_bone.visible        = node->IsNodeHidden() == FALSE;
+        synth_bone.billboard_mode = 0;
+        synth_bone.matrix = encode_matrix3(node->GetWorldTM().ExtractMatrix3());
+
+        light.bone_index = static_cast<std::uint32_t>(scene.bones.size());
+        scene.bones.push_back(std::move(synth_bone));
+        scene.lights.push_back(std::move(light));
+
+        node->ReleaseIGameObject();
+    }
+}
+
 // Recursively walk an IGameNode and its children, appending exportable
 // meshes to `scene`. Two paths depending on whether the mesh has a Skin
 // modifier:
@@ -896,6 +1006,11 @@ bool walk_scene(Interface*                  /*max_interface*/,
         walk_node(igame->GetTopLevelNode(i), out, bone_map);
     }
 
+    // Pass 3 (Phase 7b.1): lights. Omni + Directional only -- spotlights
+    // (which need an associated .Target bone for orientation, per the
+    // vanilla EB_ICC_LANDINGPAD pattern) land in 7b.2.
+    walk_lights(igame, out);
+
     igame->ReleaseIGame();
     return true;
 }
@@ -936,6 +1051,41 @@ void log_material_diagnostics(Interface* /*max_interface*/, std::string& out_log
     }
 
     igame->ReleaseIGame();
+    out_log += os.str();
+}
+
+void log_scene_summary(const alamo_format::ExportScene& scene, std::string& out_log)
+{
+    std::ostringstream os;
+    os << "\n\nExportScene summary\n"
+       << "===================\n"
+       << "bones:       " << scene.bones.size()   << "\n"
+       << "meshes:      " << scene.meshes.size()  << "\n"
+       << "lights:      " << scene.lights.size()  << "\n"
+       << "proxies:     " << scene.proxies.size() << "\n";
+
+    if (!scene.lights.empty()) {
+        os << "\nLights:\n";
+        for (std::size_t i = 0; i < scene.lights.size(); ++i) {
+            const auto& l = scene.lights[i];
+            const char* type_name = "?";
+            switch (l.type) {
+            case alamo_format::ExportLight::Type::Omni:        type_name = "Omni"; break;
+            case alamo_format::ExportLight::Type::Directional: type_name = "Directional"; break;
+            case alamo_format::ExportLight::Type::Spotlight:   type_name = "Spotlight"; break;
+            }
+            os << "  [" << i << "] \"" << l.name << "\""
+               << "  type=" << type_name
+               << "  color=(" << l.color[0] << ", " << l.color[1] << ", " << l.color[2] << ")"
+               << "  intensity=" << l.intensity
+               << "  atten=[" << l.atten_start << ".." << l.atten_end << "]"
+               << "  bone=" << l.bone_index;
+            if (l.type == alamo_format::ExportLight::Type::Spotlight) {
+                os << "  cone=[" << l.hotspot << ".." << l.falloff << "] rad";
+            }
+            os << "\n";
+        }
+    }
     out_log += os.str();
 }
 
