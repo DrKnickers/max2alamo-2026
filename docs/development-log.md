@@ -310,6 +310,7 @@ Current coverage (6 tests, all green):
 | `test_smooth_skinned_joint` | Phase 5c multi-bone weighted skinning (smooth-painted joint, 50/50 split, normalized) |
 | `test_alamo_user_props` | Phase 5d `Alamo_*` user-prop round-trip (export-geometry opt-out, hidden, collision, billboard mode) |
 | `test_helper_as_bone` | Phase 5e helpers-as-bones (`Alamo_Export_Transform` on a Dummy promotes it to a skeleton bone; unmarked helpers stay scene-only) |
+| `test_biped_skinned` | Empirical confirmation that Max Biped sub-bones reach the walker as `IGAME_BONE` and round-trip through the full skeleton + skin pipeline (36-bone biped, cylinder skinned to Spine/Head) |
 
 The harness is **not CI-runnable** (needs Max install + license seat). It's an on-demand local tool; CI keeps the format-library tests.
 
