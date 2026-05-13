@@ -317,6 +317,38 @@ def validate(alo: "Alo", strict: bool = False) -> List[str]:
                                           f"{v.weights[slot]} is negative")
                             break
 
+    # ---- Light invariants (Phase 7b.1) --------------------------------
+    # Universal: type in [0, 2], colour non-negative, intensity
+    # non-negative, atten_start <= atten_end, hotspot <= falloff.
+    # All hold across the entire vanilla corpus.
+    for li, l in enumerate(alo.lights):
+        tag = f"light[{li}] ({l.name!r})"
+        if l.type not in (0, 1, 2):
+            errors.append(f"{tag}: type {l.type} out of range [0, 2]")
+        for ci, c in enumerate(l.color):
+            if c < 0:
+                errors.append(f"{tag}: color[{ci}]={c} is negative")
+        if l.intensity < 0:
+            errors.append(f"{tag}: intensity {l.intensity} is negative")
+        if l.atten_start > l.atten_end + 1e-6 and l.atten_end > 0:
+            # Some vanilla files have atten_start > atten_end == 0
+            # (attenuation effectively disabled), which is fine. Only
+            # complain when atten_end is non-zero AND start > end.
+            errors.append(f"{tag}: atten_start ({l.atten_start}) > "
+                          f"atten_end ({l.atten_end})")
+        if l.type == 2:  # Spotlight
+            if l.hotspot < 0:
+                errors.append(f"{tag}: spotlight hotspot {l.hotspot} negative")
+            if l.falloff < 0:
+                errors.append(f"{tag}: spotlight falloff {l.falloff} negative")
+            if l.hotspot > l.falloff + 1e-6:
+                errors.append(f"{tag}: spotlight hotspot ({l.hotspot}) > "
+                              f"falloff ({l.falloff})")
+            if strict and (l.hotspot > 3.15 or l.falloff > 3.15):
+                # Max enforces cone <= 180deg (pi radians); strict check.
+                errors.append(f"{tag}: spotlight cone exceeds 180deg "
+                              f"(hotspot={l.hotspot}, falloff={l.falloff})")
+
     # ---- Connection invariants ----------------------------------------
     # 0x602 connections cover meshes + lights, in (meshes ++ lights)
     # order, per Mike Lankamp's reader (alamo2max.ms:689). Phase 7a

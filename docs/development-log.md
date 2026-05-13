@@ -36,7 +36,8 @@ Single-file project status + history. Open this first when picking up a new sess
 | 5e | `Alamo_*` user-property family — helpers-as-bones | ✅ shipped | `IGAME_HELPER` nodes with `Alamo_Export_Transform=true` join the skeleton as bones; verified by `test_helper_as_bone.ms` |
 | 5f | `Alamo_*` user-property family — remaining props research | ✅ shipped (research-only) | Format research resolved: 3 of 4 props have **zero binary representation** in `.alo`; the 4th (`Alt_Decrease_Stay_Hidden`) is a proxy-chunk field deferred to Phase 7. No walker work needed today. |
 | 7a | Format library: `ExportLight` / `ExportProxy` structs + builders | ✅ shipped | `0x1300`/`0x1301`/`0x1302` light chunks + `0x603` proxy chunks emit through `build_alo`; connection-counts in `0x601` reflect `(meshes + lights)` and proxy counts; 9 new unit tests pass; mixed scene round-trips byte-identical. |
-| 7b | Walker: `IGAME_LIGHT` → `ExportLight` + harness tests | ⏭ next | Omni / Directional / Spotlight (with target bone) emit correctly from Max scenes. |
+| 7b.1 | Walker: `IGAME_LIGHT` Omni + Directional + harness tests | ✅ shipped | `walk_lights` via `igame->GetIGameNodeByType(IGAME_LIGHT)` emits per-light synth bones + ExportLight; 6 new harness tests (basic, primaries, atten on/off, directional, mesh+light mix, hidden); `.export.log` Lights summary; Tier 1 validator extended; corpus still 2066/2066. |
+| 7b.2 | Walker: Spotlight + `.Target` sibling bone | ⏭ next | TargetSpot / FreeSpot emit with target bone for orientation. |
 | Utility UI | Faithful clone of the legacy PG Alamo Utility panel | ✅ shipped | Three rollouts (Node Export Options / Quick Selection / Animation Settings) appear under Utilities > More... > Alamo Utility; checkboxes/radios round-trip Alamo_* user properties on the selected node |
 | 6a | Effects11 shader stubs for Max 2026 | ✅ shipped | [PR #18](https://github.com/DrKnickers/max2alamo-2026/pull/18) — all 39 PG shaders load in Max 2026's DXSM with PG parameter UIs |
 | 6b | Per-vertex tangent + binormal export | ✅ shipped | [PR #19](https://github.com/DrKnickers/max2alamo-2026/pull/19) — MikkT via `IGameMesh::GetFaceVertexTangentBinormal`; bump shading works |
@@ -314,6 +315,12 @@ Current coverage (6 tests, all green):
 | `test_alamo_user_props` | Phase 5d `Alamo_*` user-prop round-trip (export-geometry opt-out, hidden, collision, billboard mode) |
 | `test_helper_as_bone` | Phase 5e helpers-as-bones (`Alamo_Export_Transform` on a Dummy promotes it to a skeleton bone; unmarked helpers stay scene-only) |
 | `test_biped_skinned` | Empirical confirmation that Max Biped sub-bones reach the walker as `IGAME_BONE` and round-trip through the full skeleton + skin pipeline (36-bone biped, cylinder skinned to Spine/Head) |
+| `test_omni_light_basic` | Phase 7b.1 baseline — single OmniLight, distinctive color/intensity/atten, synth bone at world TM |
+| `test_omni_pure_primaries` | Phase 7b.1 multi-light — 3 Omnis with pure R/G/B colors, monotonic connection indices |
+| `test_omni_atten_disabled` | Phase 7b.1 robust-defaults — `useFarAtten=false` doesn't crash; atten fields non-negative |
+| `test_directional_light` | Phase 7b.1 — DirectionalLight → type=1 |
+| `test_mesh_and_omni_mixed` | Phase 7b.1 ordering — light authored first in Max; walker still emits mesh-then-light in connections |
+| `test_omni_hidden_in_max` | Phase 7b.1 visibility — hidden Max light still exports; bone has `visible=False` |
 
 The harness is **not CI-runnable** (needs Max install + license seat). It's an on-demand local tool; CI keeps the format-library tests.
 

@@ -67,6 +67,19 @@ def main(path: str) -> int:
         errors.append(f"connection should point to bone#1 (StaticBox), "
                       f"got bone#{a.connections[0].bone_index}")
 
+    # Phase 7b.1 regression: a no-light scene should produce ZERO light
+    # chunks and ZERO proxy chunks. If walk_lights is firing on something
+    # it shouldn't (e.g. emitting a phantom light for an empty scene), or
+    # if the writer is leaking light state across runs, we'll see entries
+    # appear here. Pre-7b output had len(a.lights) == 0 by construction;
+    # this assertion locks the no-op property in.
+    if len(a.lights) != 0:
+        errors.append(f"no-light scene should have 0 lights, "
+                      f"got {len(a.lights)}: {[l.name for l in a.lights]}")
+    if len(a.proxies) != 0:
+        errors.append(f"no-proxy scene should have 0 proxies, "
+                      f"got {len(a.proxies)}: {[p.name for p in a.proxies]}")
+
     if errors:
         print("FAIL:", file=sys.stderr)
         for e in errors:
