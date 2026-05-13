@@ -39,7 +39,8 @@ Single-file project status + history. Open this first when picking up a new sess
 | 7b.1 | Walker: `IGAME_LIGHT` Omni + Directional + harness tests | ✅ shipped | `walk_lights` via `igame->GetIGameNodeByType(IGAME_LIGHT)` emits per-light synth bones + ExportLight; 6 new harness tests (basic, primaries, atten on/off, directional, mesh+light mix, hidden); `.export.log` Lights summary; Tier 1 validator extended; corpus still 2066/2066. |
 | 7b.2 | Walker: Spotlight + `.Target` sibling bone | ✅ shipped | TSpot / FSpot emit as Spotlight (type=2); TargetSpot also emits a sibling `<name>.Target` bone at `INode::GetTarget()`'s world TM (matches vanilla EB_ICC_LANDINGPAD pattern). Empirically confirmed: IGameProperty returns Max-UI **degrees** for cone angles, walker converts to radians for disk format. |
 | 7c.1 | `Alamo_Proxy` helper plugin class registered | ✅ shipped | Faithful clone of the legacy PG Max-9 plugin's helper: appears under Create > Helpers > Standard > Alamo Proxy. Stable `Class_ID(0x6ed3a4f1, 0x8a721d04)`. `NonLocalizedClassName` / `InternalName` "Alamo_Proxy" matches Mike Lankamp's `alamo2max.ms:1344` so his importer reaches us. Walker side is 7c.2. |
-| 7c.2 | Walker: `Alamo_Proxy` instances → ExportProxy + harness tests | ⏭ next | Walker detects helpers by Class_ID match (no naming convention). Reads `Alamo_Geometry_Hidden` + `Alamo_Alt_Decrease_Stay_Hidden` user props from the proxy. |
+| 7c.2 | Walker: `Alamo_Proxy` instances → ExportProxy + harness tests | ✅ shipped | `walk_proxies` detects helpers by `Class_ID == kAlamoProxyClassID` (not name prefix); emits per-proxy synth bone + ExportProxy; reads `Alamo_Geometry_Hidden` (fallback to `IsNodeHidden()`) and `Alamo_Alt_Decrease_Stay_Hidden`; mutex with Phase 5e helpers-as-bones; 5 new harness tests; `.export.log` Proxies summary. |
+| 7d | Acceptance: full integration test (skinned mesh + bones + lights + proxies) | ⏭ next | Multi-feature scene proves the whole Phase 7 surface holds together in one file. |
 | Utility UI | Faithful clone of the legacy PG Alamo Utility panel | ✅ shipped | Three rollouts (Node Export Options / Quick Selection / Animation Settings) appear under Utilities > More... > Alamo Utility; checkboxes/radios round-trip Alamo_* user properties on the selected node |
 | 6a | Effects11 shader stubs for Max 2026 | ✅ shipped | [PR #18](https://github.com/DrKnickers/max2alamo-2026/pull/18) — all 39 PG shaders load in Max 2026's DXSM with PG parameter UIs |
 | 6b | Per-vertex tangent + binormal export | ✅ shipped | [PR #19](https://github.com/DrKnickers/max2alamo-2026/pull/19) — MikkT via `IGameMesh::GetFaceVertexTangentBinormal`; bump shading works |
@@ -325,6 +326,11 @@ Current coverage (6 tests, all green):
 | `test_omni_hidden_in_max` | Phase 7b.1 visibility — hidden Max light still exports; bone has `visible=False` |
 | `test_spotlight_with_target` | Phase 7b.2 baseline — TargetSpot + `.Target` sibling bone; cone radian conversion; target world TM read at export time |
 | `test_freespot_no_target` | Phase 7b.2 — FreeSpot exports as type=2 without a `.Target` sibling bone |
+| `test_proxy_basic` | Phase 7c.2 baseline — one Alamo_Proxy at a distinctive position; default flags suppressed |
+| `test_dummy_not_a_proxy` | Phase 7c.2 — plain Dummy named `p_smoke` does NOT export as a proxy (Class_ID detection, not name-prefix) |
+| `test_proxy_with_flags` | Phase 7c.2 — 4 proxies x 2 optional flags (`Alamo_Geometry_Hidden`, `Alamo_Alt_Decrease_Stay_Hidden`) round-trip |
+| `test_proxy_mesh_light_combined` | Phase 7c.2 — mesh + light + proxies coexist; connection table covers mesh + light only, proxies have their own 0x603 chunks |
+| `test_proxy_mutex_helper_as_bone` | Phase 7c.2 — Alamo_Proxy detection wins over `Alamo_Export_Transform`; non-proxy helpers still respect Phase 5e |
 
 The harness is **not CI-runnable** (needs Max install + license seat). It's an on-demand local tool; CI keeps the format-library tests.
 
