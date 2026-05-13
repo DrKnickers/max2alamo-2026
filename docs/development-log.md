@@ -32,7 +32,8 @@ Single-file project status + history. Open this first when picking up a new sess
 | 5a | Real bone hierarchy + local matrices | ✅ shipped | [PR #24](https://github.com/DrKnickers/max2alamo-2026/pull/24) — `IGAME_BONE` walk with `GetLocalTM`; verified by `test_bone_hierarchy.ms` |
 | 5b | Single-bone skinning via IGameSkin | ✅ shipped | [PR #25](https://github.com/DrKnickers/max2alamo-2026/pull/25) — skinned cylinder exports with per-vertex dominant-bone refs; connects to Root |
 | 5c | Multi-bone weighted skinning | ✅ shipped | smooth-painted joint splits 50/50 between flanking bones with weights summing to 1.0; verified by `test_smooth_skinned_joint.ms` |
-| 5d | `Alamo_*` user-property family (Billboard_Mode, etc.) | partial | Authoring UI shipped (Utility command-panel rollouts); walker read-side pending |
+| 5d | `Alamo_*` user-property family — simple flag reads | ✅ shipped | Walker reads `Alamo_Export_Geometry` (opt-out), `Alamo_Geometry_Hidden`, `Alamo_Collision_Enabled`, `Alamo_Billboard_Mode`; verified by `test_alamo_user_props.ms` |
+| 5e | `Alamo_*` user-property family — helpers-as-bones + extra-bone + LOD/Alt | ⏭ next | `Alamo_Export_Transform` on a Helper exports it as a bone; `Alamo_Is_Extra_Bone`, `Alamo_LOD`, `Alamo_Alt` semantics resolved |
 | Utility UI | Faithful clone of the legacy PG Alamo Utility panel | ✅ shipped | Three rollouts (Node Export Options / Quick Selection / Animation Settings) appear under Utilities > More... > Alamo Utility; checkboxes/radios round-trip Alamo_* user properties on the selected node |
 | 6a | Effects11 shader stubs for Max 2026 | ✅ shipped | [PR #18](https://github.com/DrKnickers/max2alamo-2026/pull/18) — all 39 PG shaders load in Max 2026's DXSM with PG parameter UIs |
 | 6b | Per-vertex tangent + binormal export | ✅ shipped | [PR #19](https://github.com/DrKnickers/max2alamo-2026/pull/19) — MikkT via `IGameMesh::GetFaceVertexTangentBinormal`; bump shading works |
@@ -306,6 +307,7 @@ Current coverage (6 tests, all green):
 | `test_skinned_cylinder` | Phase 5b single-bone skinning via IGameSkin |
 | `test_skinned_rskin` | Integration: 5a + 5b + 6a + 6c all firing on one mesh with `RSkinBumpColorize.fx` |
 | `test_smooth_skinned_joint` | Phase 5c multi-bone weighted skinning (smooth-painted joint, 50/50 split, normalized) |
+| `test_alamo_user_props` | Phase 5d `Alamo_*` user-prop round-trip (export-geometry opt-out, hidden, collision, billboard mode) |
 
 The harness is **not CI-runnable** (needs Max install + license seat). It's an on-demand local tool; CI keeps the format-library tests.
 
@@ -375,11 +377,31 @@ Implementation: `max2alamo/src/alamo_utility.{h,cpp}` (UtilityObj subclass, Clas
 
 The walker still ignores `Alamo_*` user props on read at export time — that's Phase 5d work. Until then the panel writes the props but nothing downstream consumes them (other than the `Alamo_Shader_Name` override which has been read since Phase 4c).
 
-### Phase 5d — `Alamo_*` user-property family (next)
+### Phase 5d — `Alamo_*` user-property family, simple-flag half (shipped)
 
-Walker-side read of the user props the new Utility panel now writes. Scope:
+Walker-side read of the props the Utility panel writes that have a direct 1:1 mapping into existing `ExportBone` / `ExportMesh` fields — no architectural changes needed. Four props landed in this PR:
 
-Read remaining legacy user props that the corpus survey identified: `Alamo_Billboard_Mode` (→ select 0x205 vs 0x206 chunk variant or set `billboard_mode != 0`), `Alamo_Export_Transform` (mark a Helper / Dummy as an exportable bone, complementing the IGAME_BONE auto-detection in 5a), `Alamo_Geometry_Hidden` / `Alamo_Collision_Enabled` (mesh-level flags), `Alamo_Alt_Decrease_Stay_Hidden`. Small scope: one read per prop, write into `ExportBone` / `ExportMesh`. Coverage test via the harness.
+| Property | Walker site | Behaviour |
+|---|---|---|
+| `Alamo_Export_Geometry` | `walk_node` (mesh path) | When **explicitly false**, skip the mesh entirely (recurse into children for free-standing groups, then return). Absent prop ⇒ export, preserving the pre-5d "everything is exported" contract that the existing test corpus depends on. |
+| `Alamo_Geometry_Hidden` | `build_mesh` | When present, overrides `ExportMesh::is_hidden` regardless of Max's own `IsNodeHidden()`. Falls back to Max-native hidden state when absent. |
+| `Alamo_Collision_Enabled` | `build_mesh` | Sets `ExportMesh::is_collision`. Defaults to false (collision-disabled) when absent. |
+| `Alamo_Billboard_Mode` | `walk_bones` (real bones) + `walk_node` (static-mesh synth bone path) | Read as `int` and stored in `ExportBone::billboard_mode`. For static meshes the prop lives on the mesh node and propagates to the synthetic per-mesh attachment bone (which is what the engine animates for billboarding). |
+
+Plumbing: three new typed helpers in `scene_walker.cpp` (`read_node_user_prop_bool`, `read_node_user_prop_int`, `has_node_user_prop`) sitting next to the existing `read_node_user_prop`. Property-key constants moved to a single block near `kShaderOverrideKey` and named to match `alamo_utility.cpp`'s `kProp*` constants byte-for-byte (so the read side here always sees what the write side there stored).
+
+Verifier extension: `_alo.py`'s `Mesh` dataclass gained `is_hidden` + `is_collision` populated from the `0x402` chunk's offsets 32/36, so any test going forward can assert on these flags.
+
+`test_alamo_user_props.ms` regression: four boxes, one per code path — `PlainBox` (no props, all defaults), `HiddenColl` (both flags true), `BillboardFace` (mode=2), `SkippedMesh` (Export_Geometry=false). Verifier checks each round-trip end-to-end through the walker.
+
+### Phase 5e — `Alamo_*` user-property family, architectural half (next)
+
+The harder reads, each of which needs new walker logic rather than a 1:1 field copy:
+
+- **`Alamo_Export_Transform` on a Helper / Dummy / Point** → treat that node as an exportable bone, complementing the `IGAME_BONE` detection that's been in place since 5a. Requires extending `is_exportable_bone` and threading helper-as-bone matrices through `walk_bones`.
+- **`Alamo_Is_Extra_Bone`** → format-research first; the legacy plugin emitted these as a distinct skeleton sub-class (likely tied to billboarding or animation-only bones that don't receive geometry attachments).
+- **`Alamo_Alt_Decrease_Stay_Hidden`** → semantics need confirming against vanilla content before wiring.
+- **`Alamo_LOD` / `Alamo_Alt`** → these affect file-level naming / variant-selection rather than per-node fields; needs design before code.
 
 ### Phase 6e (optional polish) — Walker-side `.export.log` consistency
 
