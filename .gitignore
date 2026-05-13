@@ -11,6 +11,11 @@ MinSizeRel/
 x64/
 x86/
 
+# Plugin install staging dir -- where the post-build step drops
+# max2alamo.dle for Max to load from a user-writable path (no Program
+# Files elevation on every rebuild). See docs/build.md.
+plugin/
+
 # CMake
 CMakeCache.txt
 CMakeFiles/

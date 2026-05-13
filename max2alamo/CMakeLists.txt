@@ -82,3 +82,30 @@ target_compile_definitions(max2alamo PRIVATE
 )
 
 target_compile_features(max2alamo PRIVATE cxx_std_17)
+
+# --- Install path ----------------------------------------------------------
+#
+# Drop the built .dle into <repo>/plugin/max2alamo.dle on every build, so
+# Max can load it from a user-writable folder (no Program Files elevation
+# on each rebuild). The dev workflow is then:
+#
+#   1. One-time setup: in Max, Customize -> Configure System Paths ->
+#      3rd Party Plug-Ins -> Add this directory, then restart Max.
+#   2. Every rebuild: just `cmake --build ... --target max2alamo` and
+#      restart Max -- no copy step, no UAC prompt.
+#
+# Implemented as POST_BUILD copy_if_different rather than RUNTIME_OUTPUT_
+# DIRECTORY so the MSBuild config subfolder (Release\) doesn't end up in
+# the install path. The destination is a stable, deterministic name Max's
+# plugin loader can rely on.
+set(MAX2ALAMO_INSTALL_DIR "${CMAKE_SOURCE_DIR}/plugin"
+    CACHE PATH "Folder the built max2alamo.dle is copied to after each build")
+
+add_custom_command(TARGET max2alamo POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${MAX2ALAMO_INSTALL_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:max2alamo>"
+            "${MAX2ALAMO_INSTALL_DIR}/max2alamo.dle"
+    COMMENT "Installing max2alamo.dle to ${MAX2ALAMO_INSTALL_DIR}/"
+    VERBATIM
+)

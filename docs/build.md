@@ -46,16 +46,28 @@ Output: `build/max2alamo/Release/max2alamo.dle` (~ a few hundred KB).
 
 ## Installing the plugin into 3ds Max 2026
 
-Copy the built `.dle` into Max's plugins folder:
+Every build copies the `.dle` into a user-writable folder inside the repo:
 
-```powershell
-Copy-Item build\max2alamo\Release\max2alamo.dle `
-    "C:\Program Files\Autodesk\3ds Max 2026\Plugins\"
+```
+<repo>/plugin/max2alamo.dle
 ```
 
-Restart 3ds Max. If the plugin loads correctly, **File → Export...** now lists `Alamo Object (*.ALO)` as a save-as type. Selecting it and confirming will currently pop a "Phase 3 scaffold reached DoExport()" dialog -- that's expected; real export logic lands in Phases 4 onward.
+The copy is done by a CMake `POST_BUILD` step, so `cmake --build build --config Release --target max2alamo` always leaves a fresh `.dle` at that exact path. The folder is gitignored.
 
-If Max fails to load the plugin, check `<MAX>\Network\Max.log` for an error. Most common cause: the `.dle` was built against the wrong SDK version (must match Max 2026, not 2024 / 2025 / etc.).
+**One-time Max setup** so Max scans that folder on startup:
+
+1. Open 3ds Max → **Customize** → **Configure System Paths…**
+2. Switch to the **3rd Party Plug-Ins** tab.
+3. **Add…** the absolute path to the repo's `plugin/` folder (e.g. `C:\Modding\max2alamo-2026\plugin\`).
+4. OK out, then restart Max.
+
+From then on the dev loop is `build → restart Max`. No copy step, no UAC prompt.
+
+If you previously installed the plugin into `C:\Program Files\Autodesk\3ds Max 2026\Plugins\`, **delete it** (one final elevation) so Max doesn't try to load the plugin from two places — the second load fails with a duplicate-Class_ID error in `Network\Max.log` and is silent in the UI.
+
+If you'd rather have the post-build copy go somewhere else (e.g. directly into the Plugins folder, or a custom shared location), pass `-DMAX2ALAMO_INSTALL_DIR=<absolute path>` at configure time.
+
+If Max fails to load the plugin, check `<MAX>\Network\Max.log`. Most common cause: the `.dle` was built against the wrong SDK version (must match Max 2026, not 2024 / 2025 / etc.).
 
 ## Building everything in one go
 
