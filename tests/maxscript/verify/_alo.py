@@ -93,6 +93,11 @@ class Submesh:
 class Mesh:
     name: str
     submeshes: List[Submesh] = field(default_factory=list)
+    # Phase 5d: 0x402 mesh-info flags (each stored as a u32 0/1 in the
+    # 128-byte info chunk; populated from Alamo_Geometry_Hidden /
+    # Alamo_Collision_Enabled user props on the source mesh node).
+    is_hidden: bool = False
+    is_collision: bool = False
 
 
 @dataclass
@@ -269,14 +274,22 @@ def _parse_mesh(data: bytes, payload_off: int, end: int) -> Mesh:
     name = "?"
     materials = []        # list of (off, end)
     geometries = []       # list of (off, end)
+    is_hidden = False
+    is_collision = False
     for cid, _, off, size, _end in _walk(data, payload_off, end):
         if cid == 0x401:
             name = _read_cstring(data, off, size)
+        elif cid == 0x402 and size >= 40:
+            # 0x402 mesh-info layout (alo_build.cpp::build_mesh_info):
+            #   u32 submesh_count, 3*f32 bbox_min, 3*f32 bbox_max,
+            #   u32 unused, u32 is_hidden, u32 is_collision, ...zeros.
+            is_hidden    = struct.unpack_from("<I", data, off + 32)[0] != 0
+            is_collision = struct.unpack_from("<I", data, off + 36)[0] != 0
         elif cid == 0x10100:
             materials.append((off, off + size))
         elif cid == 0x10000:
             geometries.append((off, off + size))
-    mesh = Mesh(name=name)
+    mesh = Mesh(name=name, is_hidden=is_hidden, is_collision=is_collision)
     # Materials and geometries are siblings paired in declaration order
     # (per the Phase 4c vanilla-layout fix).
     for i, mat in enumerate(materials):

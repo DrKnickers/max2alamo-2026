@@ -60,6 +60,43 @@ std::string read_node_user_prop(INode* node, const TCHAR* key)
     return to_utf8(value.data());
 }
 
+// Phase 5d: typed user-prop readers for the Alamo_* family that the
+// Utility command-panel UI writes. Each returns the prop's value when
+// present, or the provided default when absent -- this is how the
+// walker honours an explicit author choice while preserving the
+// pre-5d "no prop = default behaviour" contract that the test corpus
+// was built against.
+bool read_node_user_prop_bool(INode* node, const TCHAR* key, bool dflt)
+{
+    if (!node || !key) return dflt;
+    BOOL v = dflt ? TRUE : FALSE;
+    if (node->GetUserPropBool(const_cast<TCHAR*>(key), v)) return v != FALSE;
+    return dflt;
+}
+
+int read_node_user_prop_int(INode* node, const TCHAR* key, int dflt)
+{
+    if (!node || !key) return dflt;
+    int v = dflt;
+    if (node->GetUserPropInt(const_cast<TCHAR*>(key), v)) return v;
+    return dflt;
+}
+
+// Returns true when the node has a user-prop named `key` at all, in
+// any value -- used to distinguish "author set Alamo_Geometry_Hidden=0
+// explicitly" from "prop absent, fall back to Max-native IsNodeHidden".
+bool has_node_user_prop(INode* node, const TCHAR* key)
+{
+    if (!node || !key) return false;
+    BOOL bv = FALSE;
+    if (node->GetUserPropBool(const_cast<TCHAR*>(key), bv)) return true;
+    int iv = 0;
+    if (node->GetUserPropInt(const_cast<TCHAR*>(key), iv)) return true;
+    MSTR sv;
+    if (node->GetUserPropString(const_cast<TCHAR*>(key), sv)) return true;
+    return false;
+}
+
 // If `mat` is a DirectX Shader material, return its IDxMaterial interface
 // (or one of the newer revisions). Returns nullptr for any other material.
 IDxMaterial* as_dx_material(Mtl* mat)
@@ -180,7 +217,15 @@ std::vector<alamo_format::MaterialParam> extract_pblock_params(IParamBlock2* pbl
 // material being unable to compile EaW's DX9-era HLSL: users put a
 // plain Standard material on the mesh for the texture, then add this
 // user property to choose the actual Alamo shader.
-constexpr const TCHAR* kShaderOverrideKey = _T("Alamo_Shader_Name");
+constexpr const TCHAR* kShaderOverrideKey   = _T("Alamo_Shader_Name");
+
+// Phase 5d: Alamo_* user-prop family written by the Utility panel.
+// Names must match alamo_utility.cpp's kProp* constants byte-for-byte
+// so the read side (here) sees what the write side (panel) stored.
+constexpr const TCHAR* kPropExportGeometry  = _T("Alamo_Export_Geometry");
+constexpr const TCHAR* kPropCollisionEnabled= _T("Alamo_Collision_Enabled");
+constexpr const TCHAR* kPropGeometryHidden  = _T("Alamo_Geometry_Hidden");
+constexpr const TCHAR* kPropBillboardMode   = _T("Alamo_Billboard_Mode");
 
 // Inspect a Max material and figure out what shader / texture pair best
 // represents it for Phase 4 export. Decision tree:
@@ -443,7 +488,21 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh,
     }
 
     out.submeshes.push_back(std::move(sub));
-    out.is_hidden = node->IsNodeHidden() != FALSE;
+
+    // Phase 5d: hidden / collision flags. Alamo_Geometry_Hidden, when
+    // present on the node, takes precedence over Max's own hidden
+    // state (modders sometimes need a mesh that's visible in-Max for
+    // authoring convenience but `is_hidden=true` on disk, or vice
+    // versa). Falls back to IsNodeHidden when the prop is absent,
+    // preserving the pre-5d behaviour for scenes that never set the
+    // prop. Alamo_Collision_Enabled defaults to false.
+    INode* node_inode = node->GetMaxNode();
+    if (has_node_user_prop(node_inode, kPropGeometryHidden)) {
+        out.is_hidden = read_node_user_prop_bool(node_inode, kPropGeometryHidden, false);
+    } else {
+        out.is_hidden = node->IsNodeHidden() != FALSE;
+    }
+    out.is_collision = read_node_user_prop_bool(node_inode, kPropCollisionEnabled, false);
     return true;
 }
 
@@ -502,7 +561,12 @@ void walk_bones(IGameNode* node, std::uint32_t parent_bone_idx,
         bone.name           = to_utf8(node->GetName());
         bone.parent_index   = parent_bone_idx;
         bone.visible        = node->IsNodeHidden() == FALSE;
-        bone.billboard_mode = 0;
+        // Phase 5d: Alamo_Billboard_Mode on a real Max bone propagates
+        // to the bone chunk's billboard_mode field. Engine reads this
+        // to drive runtime billboard rotation (foliage, lens flares,
+        // sun discs). Default 0 = Disable when prop absent.
+        bone.billboard_mode = static_cast<std::uint32_t>(
+            read_node_user_prop_int(node->GetMaxNode(), kPropBillboardMode, 0));
         // GetLocalTM returns the node's transform relative to its Max
         // parent. For top-level bones this is the world transform (Max
         // scene root is identity); for child bones it's the
@@ -543,6 +607,21 @@ void walk_node(IGameNode* node, alamo_format::ExportScene& scene,
     IGameObject* obj = node->GetIGameObject();
     if (obj) {
         if (obj->GetIGameType() == IGameObject::IGAME_MESH) {
+            // Phase 5d: Alamo_Export_Geometry, when explicitly false,
+            // skips the mesh entirely (matches the legacy PG plugin's
+            // opt-out semantics for meshes the modder marked
+            // non-exportable). Absent prop ⇒ export (preserves the
+            // pre-5d "everything in the scene gets exported" contract
+            // the test corpus relies on).
+            INode* max_node = node->GetMaxNode();
+            if (has_node_user_prop(max_node, kPropExportGeometry) &&
+                !read_node_user_prop_bool(max_node, kPropExportGeometry, true)) {
+                node->ReleaseIGameObject();
+                for (int i = 0; i < node->GetChildCount(); ++i) {
+                    walk_node(node->GetNodeChild(i), scene, bone_map);
+                }
+                return;
+            }
             // InitializeData is required before any mesh accessor calls.
             if (obj->InitializeData()) {
                 IGameMesh* gmesh = static_cast<IGameMesh*>(obj);
@@ -562,7 +641,11 @@ void walk_node(IGameNode* node, alamo_format::ExportScene& scene,
                     synth_bone.name           = to_utf8(node->GetName());
                     synth_bone.parent_index   = 0;          // child of Root
                     synth_bone.visible        = true;
-                    synth_bone.billboard_mode = 0;
+                    // Phase 5d: Alamo_Billboard_Mode on a static-mesh
+                    // node propagates to the synthetic per-mesh bone
+                    // that the engine animates as a billboard.
+                    synth_bone.billboard_mode = static_cast<std::uint32_t>(
+                        read_node_user_prop_int(max_node, kPropBillboardMode, 0));
                     synth_bone.matrix = encode_matrix3(node->GetWorldTM().ExtractMatrix3());
                     connect_bone_index = static_cast<std::uint32_t>(scene.bones.size());
                     ctx.fallback_bone_index = connect_bone_index;
