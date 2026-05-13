@@ -8,6 +8,7 @@
 // 3ds Max 2026 SDK.
 
 #include "alo_export.h"
+#include "alamo_utility.h"
 
 #include <Max.h>
 #include <iparamb2.h>
@@ -48,13 +49,16 @@ extern "C" __declspec(dllexport) const TCHAR* LibDescription()
 
 extern "C" __declspec(dllexport) int LibNumberClasses()
 {
-    return 1;  // Phase 3 exposes only AloExport.
+    // [0] AloExport (SceneExport)
+    // [1] AlamoUtility (Utilities command panel)
+    return 2;
 }
 
 extern "C" __declspec(dllexport) ClassDesc* LibClassDesc(int i)
 {
     switch (i) {
         case 0:  return &g_alo_export_desc;
+        case 1:  return max2alamo::GetAlamoUtilityClassDesc();
         default: return nullptr;
     }
 }
@@ -65,8 +69,10 @@ extern "C" __declspec(dllexport) ULONG LibVersion()
 }
 
 // Tells Max it's safe to defer loading this DLL until first use, instead
-// of pulling it in at startup. SceneExport plugins qualify because they
-// don't register controllers / persistent data on init.
+// of pulling it in at startup. Both class types we expose (SceneExport,
+// Utility) qualify because neither registers controllers or persistent
+// scene data at init -- the Utility's user-prop reads/writes happen
+// lazily when the user opens the rollout.
 extern "C" __declspec(dllexport) ULONG CanAutoDefer()
 {
     return 1;

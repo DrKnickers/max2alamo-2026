@@ -1,0 +1,125 @@
+// Dialog templates for the Alamo Utility command-panel rollouts.
+//
+// Each dialog is 108 dialog units wide (the Max command panel's
+// inner column). Layout is faithful to the legacy Petroglyph
+// max2alamo Utility UI -- same control set, same grouping, same
+// indentation. Visual styling is Max-theme-default (modern Max
+// renders dialogs in the active workspace theme automatically).
+//
+// Spinners use Max's CustEdit + SpinnerControl custom-window
+// classes; these are registered at Max startup and become available
+// once the plugin loads.
+
+#include <windows.h>
+#include "utility_resource.h"
+
+// ---- Node Export Options --------------------------------------------------
+
+IDD_ALAMO_NODE_EXPORT_OPTIONS DIALOGEX 0, 0, 108, 198
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_VISIBLE
+FONT 8, "Ms Shell Dlg", 400, 0, 0x1
+BEGIN
+    AUTOCHECKBOX    "Export Transform", IDC_NODE_EXPORT_TRANSFORM,
+                    7, 5, 88, 10
+    AUTOCHECKBOX    "Is ""Extra"" Bone", IDC_NODE_IS_EXTRA_BONE,
+                    16, 17, 80, 10
+
+    GROUPBOX        "Billboarding Options", IDC_BILLBOARD_GROUP,
+                    4, 31, 100, 100
+    PUSHBUTTON      "?", IDC_BILLBOARD_HELP,
+                    91, 32, 11, 10, BS_PUSHBUTTON
+
+    AUTORADIOBUTTON "Disable",      IDC_BILLBOARD_DISABLE,
+                    14, 44, 60, 10, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "Parallel",     IDC_BILLBOARD_PARALLEL,
+                    14, 55, 60, 10
+    AUTORADIOBUTTON "Face",         IDC_BILLBOARD_FACE,
+                    14, 66, 60, 10
+    AUTORADIOBUTTON "ZAxis View",   IDC_BILLBOARD_ZAXIS_VIEW,
+                    14, 77, 70, 10
+    AUTORADIOBUTTON "ZAxis Light",  IDC_BILLBOARD_ZAXIS_LIGHT,
+                    14, 88, 70, 10
+    AUTORADIOBUTTON "ZAxis Wind",   IDC_BILLBOARD_ZAXIS_WIND,
+                    14, 99, 70, 10
+    AUTORADIOBUTTON "Sunlight Glow",IDC_BILLBOARD_SUNLIGHT_GLOW,
+                    14, 110, 80, 10
+    AUTORADIOBUTTON "Sun",          IDC_BILLBOARD_SUN,
+                    14, 121, 60, 10
+
+    AUTOCHECKBOX    "Export Geometry", IDC_NODE_EXPORT_GEOMETRY,
+                    7, 140, 90, 10
+    AUTOCHECKBOX    "Enable Collision", IDC_NODE_ENABLE_COLLISION,
+                    16, 152, 80, 10
+    AUTOCHECKBOX    "Hidden", IDC_NODE_HIDDEN,
+                    16, 164, 80, 10
+    AUTOCHECKBOX    "Alt Dec Stay Hidden", IDC_NODE_ALT_DEC_STAY_HIDDEN,
+                    16, 176, 80, 10
+END
+
+// ---- Quick Selection Utility ----------------------------------------------
+
+IDD_ALAMO_QUICK_SELECTION DIALOGEX 0, 0, 108, 80
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_VISIBLE
+FONT 8, "Ms Shell Dlg", 400, 0, 0x1
+BEGIN
+    PUSHBUTTON      "Export Transform", IDC_QS_EXPORT_TRANSFORM,
+                    8, 4, 92, 12
+    PUSHBUTTON      "Export Geometry",  IDC_QS_EXPORT_GEOMETRY,
+                    8, 18, 92, 12
+    PUSHBUTTON      "Enable Collision", IDC_QS_ENABLE_COLLISION,
+                    8, 32, 92, 12
+
+    LTEXT           "LOD", IDC_STATIC,
+                    10, 48, 16, 10
+    CONTROL         "", IDC_QS_LOD_EDIT,    "CustEdit", WS_TABSTOP,
+                    34, 47, 28, 11
+    CONTROL         "", IDC_QS_LOD_SPIN,    "SpinnerControl", 0,
+                    62, 47,  8, 11
+    PUSHBUTTON      "?", IDC_QS_LOD_HELP,
+                    78, 47, 11, 11
+
+    LTEXT           "Alt", IDC_STATIC,
+                    10, 62, 16, 10
+    CONTROL         "", IDC_QS_ALT_EDIT,    "CustEdit", WS_TABSTOP,
+                    34, 61, 28, 11
+    CONTROL         "", IDC_QS_ALT_SPIN,    "SpinnerControl", 0,
+                    62, 61,  8, 11
+    PUSHBUTTON      "?", IDC_QS_ALT_HELP,
+                    78, 61, 11, 11
+END
+
+// ---- Animation Settings ---------------------------------------------------
+
+IDD_ALAMO_ANIMATION_SETTINGS DIALOGEX 0, 0, 108, 100
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_VISIBLE
+FONT 8, "Ms Shell Dlg", 400, 0, 0x1
+BEGIN
+    LTEXT           "Anim Name:", IDC_STATIC,
+                    8, 4, 50, 10
+    COMBOBOX        IDC_ANIM_NAME_COMBO,
+                    8, 14, 92, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+    LTEXT           "Start:", IDC_STATIC,
+                    8, 32, 24, 10
+    CONTROL         "", IDC_ANIM_START_EDIT, "CustEdit", WS_TABSTOP,
+                    60, 31, 32, 11
+    CONTROL         "", IDC_ANIM_START_SPIN, "SpinnerControl", 0,
+                    92, 31,  8, 11
+
+    LTEXT           "End:", IDC_STATIC,
+                    8, 46, 24, 10
+    CONTROL         "", IDC_ANIM_END_EDIT,   "CustEdit", WS_TABSTOP,
+                    60, 45, 32, 11
+    CONTROL         "", IDC_ANIM_END_SPIN,   "SpinnerControl", 0,
+                    92, 45,  8, 11
+
+    PUSHBUTTON      "<<",  IDC_ANIM_PREV,   8, 60, 20, 12
+    PUSHBUTTON      "Add", IDC_ANIM_ADD,   30, 60, 20, 12
+    PUSHBUTTON      "Del", IDC_ANIM_DEL,   52, 60, 20, 12
+    PUSHBUTTON      ">>",  IDC_ANIM_NEXT,  74, 60, 20, 12
+
+    PUSHBUTTON      "Display Current", IDC_ANIM_DISPLAY_CURRENT,
+                    8, 76, 92, 12
+    PUSHBUTTON      "Display All",     IDC_ANIM_DISPLAY_ALL,
+                    8, 90, 92, 12
+END
