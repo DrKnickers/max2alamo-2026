@@ -17,6 +17,10 @@
 --   - "SkippedMesh"  Alamo_Export_Geometry=false
 --                    -> entirely absent from the .alo (no mesh chunk
 --                       and no synthetic per-mesh bone)
+--   - "MaxHidden"    no Alamo_* props, but hidden in Max via .ishidden
+--                    -> exported with is_hidden=true (pins the fallback
+--                       branch where Alamo_Geometry_Hidden is absent
+--                       and the walker reads node->IsNodeHidden() instead)
 
 fileIn "_harness.ms"
 alamoTestSetup()
@@ -40,8 +44,15 @@ setUserProp billboardFace "Alamo_Billboard_Mode" 2
 skipped = Box length:10 width:10 height:10 pos:[90, 0, 0] name:"SkippedMesh"
 setUserProp skipped "Alamo_Export_Geometry" false
 
-format "  4 boxes authored: PlainBox (defaults), HiddenColl (hidden+collision), "
-format "BillboardFace (mode=2), SkippedMesh (excluded)\n"
+-- Max-hidden box with no Alamo_* props. Exercises the fallback in
+-- build_mesh: when Alamo_Geometry_Hidden is absent, the walker reads
+-- node->IsNodeHidden() instead. Without this case the test passes
+-- regardless of whether the fallback branch runs.
+maxHidden = Box length:10 width:10 height:10 pos:[120, 0, 0] name:"MaxHidden"
+hide maxHidden
+
+format "  5 boxes authored: PlainBox (defaults), HiddenColl (hidden+collision), "
+format "BillboardFace (mode=2), SkippedMesh (excluded), MaxHidden (Max-hidden, no props)\n"
 
 alamoTestExport "test_alamo_user_props"
 quitMax #noPrompt
