@@ -411,12 +411,11 @@ build\tools\alo_roundtrip\Release\alo_roundtrip.exe --dir tests\corpus
 # Dump a single .alo
 build\tools\alo_dump\Release\alo_dump.exe path\to\file.alo
 
-# Build only the Max plugin (after configure)
+# Build only the Max plugin (after configure). A POST_BUILD step drops
+# the .dle into <repo>\plugin\max2alamo.dle automatically; Max is
+# configured to scan that folder via Customize -> Configure System
+# Paths -> 3rd Party Plug-Ins. No copy step, no UAC. See docs/build.md.
 cmake --build build --config Release --target max2alamo
-
-# Install plugin into Max (requires elevation)
-Copy-Item build\max2alamo\Release\max2alamo.dle `
-    "C:\Program Files\Autodesk\3ds Max 2026\Plugins\"
 
 # Run the Max-side end-to-end regression suite (needs Max + license).
 # Re-exports only stale tests; ~25 sec per test that needs re-running.

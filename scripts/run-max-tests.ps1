@@ -24,7 +24,10 @@
   Path to 3dsmaxbatch.exe.
 
 .PARAMETER PluginDle
-  Path to the installed plugin (used as a cache invalidator).
+  Path to the installed plugin (used as a cache invalidator). Defaults
+  to the in-repo install dir that the CMake POST_BUILD step writes to.
+  Max must be configured (Customize -> Configure System Paths -> 3rd
+  Party Plug-Ins) to scan that same folder.
 
 .EXAMPLE
   powershell -File scripts/run-max-tests.ps1
@@ -37,7 +40,7 @@ param(
     [string]$Filter   = "*",
     [switch]$Force,
     [string]$MaxBatch = "C:\Program Files\Autodesk\3ds Max 2026\3dsmaxbatch.exe",
-    [string]$PluginDle = "C:\Program Files\Autodesk\3ds Max 2026\Plugins\max2alamo.dle"
+    [string]$PluginDle = (Join-Path (Split-Path -Parent $PSScriptRoot) 'plugin\max2alamo.dle')
 )
 
 $ErrorActionPreference = 'Stop'
