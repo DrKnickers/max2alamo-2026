@@ -41,6 +41,7 @@ Single-file project status + history. Open this first when picking up a new sess
 | 7c.1 | `Alamo_Proxy` helper plugin class registered | ✅ shipped | Faithful clone of the legacy PG Max-9 plugin's helper: appears under Create > Helpers > Standard > Alamo Proxy. Stable `Class_ID(0x6ed3a4f1, 0x8a721d04)`. `NonLocalizedClassName` / `InternalName` "Alamo_Proxy" matches Mike Lankamp's `alamo2max.ms:1344` so his importer reaches us. Walker side is 7c.2. |
 | 7c.2 | Walker: `Alamo_Proxy` instances → ExportProxy + harness tests | ✅ shipped | `walk_proxies` detects helpers by `Class_ID == kAlamoProxyClassID` (not name prefix); emits per-proxy synth bone + ExportProxy; reads `Alamo_Geometry_Hidden` (fallback to `IsNodeHidden()`) and `Alamo_Alt_Decrease_Stay_Hidden`; mutex with Phase 5e helpers-as-bones; 5 new harness tests; `.export.log` Proxies summary. |
 | 7d | Acceptance: full integration test (skinned mesh + bones + lights + proxies) | ✅ shipped | `test_phase7_acceptance` combines 2 real bones + helper-as-bone + skinned cylinder + static box + Omni + TargetSpot + 2 proxies in one scene (10 bones / 2 meshes / 2 lights / 2 proxies / 4 connections). Tier 1 strict clean, Tier 2 byte-identical, Tier 3 verifier with **31 interaction-shaped assertions** across 8 groups (skeleton/mutex/wiring/lights/proxies/connections/matrices/log) all pass; 3× byte-identical determinism (SHA `56FCEAF0…`); 24/24 harness, 60/60 unit, 2066/2066 corpus; tripwires confirm assertions actually bite. |
+| 8a | Format library: typed `.ala` read/write pipeline (`AlaAnimation` struct + `build_ala` + `read_ala` + `ala_typed_roundtrip` CLI + 21 Catch2 tests) | ✅ shipped | **2863/2863 vanilla `.ala` byte-identical** via typed pipeline (1500/1500 FoC + 1363/1363 EaW — exceeded plan's parse-clean bar for EaW). Design key: typed fields + raw payload preservation per leaf, so read-then-write is identity by construction. 3× full-corpus determinism; `alo_dump` output identical across runs; 81/81 unit tests; non-regression on `alo_roundtrip` (4929/4929) and `.alo` corpus sweep (2066/2066); three negative tripwires fire on the expected assertion. |
 | Utility UI | Faithful clone of the legacy PG Alamo Utility panel | ✅ shipped | Three rollouts (Node Export Options / Quick Selection / Animation Settings) appear under Utilities > More... > Alamo Utility; checkboxes/radios round-trip Alamo_* user properties on the selected node |
 | 6a | Effects11 shader stubs for Max 2026 | ✅ shipped | [PR #18](https://github.com/DrKnickers/max2alamo-2026/pull/18) — all 39 PG shaders load in Max 2026's DXSM with PG parameter UIs |
 | 6b | Per-vertex tangent + binormal export | ✅ shipped | [PR #19](https://github.com/DrKnickers/max2alamo-2026/pull/19) — MikkT via `IGameMesh::GetFaceVertexTangentBinormal`; bump shading works |
@@ -48,7 +49,7 @@ Single-file project status + history. Open this first when picking up a new sess
 | 6d | Coord-frame banner in `.export.log` | ✅ shipped | [PR #21](https://github.com/DrKnickers/max2alamo-2026/pull/21) — every export documents `Z up, -Y forward, +X right` |
 | Test harness | Max-side regression suite | ✅ shipped | [PR #23](https://github.com/DrKnickers/max2alamo-2026/pull/23) + [#26](https://github.com/DrKnickers/max2alamo-2026/pull/26) — `scripts/run-max-tests.ps1` runs 6 end-to-end tests via `3dsmaxbatch` |
 | 7 | Lights, hardpoints, proxies | ✅ shipped | Format library + walker + helper plugin class all in place; 24/24 harness covers Omni/Directional/Spotlight/`.Target`/proxies/flags + the 7d full-scene integration. In-game fighter Tier 4 deferred to Phase 8/9. |
-| 8 | Animation export incl. visibility tracks | pending | Walk cycle + animated visibility play correctly in-game |
+| 8 | Animation export incl. visibility tracks | in progress | Walk cycle + animated visibility play correctly in-game. **Sub-phases:** 8a typed `.ala` read/write pipeline ✅; 8b walker rotation-only pass, 8c walker translation+scale + FoC pool packing, 8d visibility tracks, 8e full integration acceptance pending. |
 | 9 | Polish + v1 release | pending | v1.0 tag with `.dle` published via GitHub Releases |
 
 Each main phase has a corresponding GitHub issue (`#1` for Phase 0.5 through `#10` for Phase 9). Sub-phases (4c-fix, 5a/5b, 6a-d, test harness) shipped as standalone PRs without dedicated issues.
@@ -484,13 +485,35 @@ The tripwires are documented but not committed — they live only as a dev-time 
 
 `.export.log` currently dumps params with their walker-side values (Max's `TYPE_FRGBA` returns alpha=1). The on-disk bytes correctly apply the Phase 6c float3 alpha-zero convention before writing, so a quick reader of the log might see `Emissive = (0, 0, 0, 1)` and think the bytes say the same. Cheap fix: apply the same `is_float3` zero-out at log time, so the diagnostic mirrors the bytes. Pure clarity; no functional change.
 
-### Phase 8 — Animation export incl. visibility tracks
+### Phase 8 — Animation export incl. visibility tracks (in progress)
 
-The `.ala` writer. Sample Max bone tracks per frame in the user-specified range. Quaternion compression (`int16 = round(q * 32767)`, XYZW order). Position / scale compression (per-bone offset + scale, then per-frame `int16[3]`). Default to **FoC track-pool format** (smaller, both engines support it).
+The `.ala` writer. Five sub-phases per the Phase 8 plan: 8a typed format-library pipeline, 8b walker rotation pass, 8c translation+scale + FoC pool packing, 8d visibility tracks (first-class v1 goal), 8e full integration acceptance. Each ships as a separate PR.
 
-**Object visibility tracks (first-class v1 goal):** sample each animated object's visibility per frame, encode as bit-packed track (`'1'` visible, `'0'` hidden), each byte bit-reversed for little-endian. Only emit `0x1007` for bones where any frame is hidden.
+Animation Settings UI wiring is **explicitly deferred to Phase 9**; v1 reads `Alamo_Anim_Start` / `Alamo_Anim_End` / `Alamo_Anim_Name` from the scene-root user properties.
 
 Acceptance: a walk cycle plus a scene with animated visibility (e.g. blinking nav lights) export and play correctly via Mike's importer and in EaW.
+
+### Phase 8a — Typed `.ala` read/write pipeline (shipped)
+
+`alamo_format/include/alamo_format/ala_anim.h` defines `AlaAnimation` + `AlaBoneTrack` with both typed fields (so the Phase 8b+ walker can populate them directly) and raw payload preservation per leaf (so a `read_ala` → `AlaAnimation` → `build_ala` round-trip is identity-preserving by construction). `build_ala()` synthesises canonical FoC bytes from typed fields when raw payloads are empty; vanilla corpus round-trip exercises the pass-through path.
+
+**Acceptance signal — 2863/2863 vanilla `.ala` byte-identical via the typed pipeline.** That exceeds the plan's parse-clean target for the 1363 EaW files, because the design carries each per-bone 0x1004/0x1005/0x1006/0x1007/0x1008 leaf as an opaque `track_leaves` ChunkNode that round-trips verbatim regardless of format.
+
+Format details, all corpus-confirmed:
+- Top-level: single `0x1000` container.
+- `0x1001` (info): mini-chunks 1 (nFrames, u32), 2 (fps, f32), 3 (nBones, u32). FoC also has 11 / 12 / 13 (rotation / translation / scale word counts). Presence of any FoC mini-chunk is the format-detection signal.
+- `0x1002` (per-bone): contains `0x1003` (bone info — mini-chunks 4–9 and FoC's 14–17) plus any track leaves (0x1004/5/6/7/8).
+- File-scope FoC pools after the last `0x1002`: **`0x100a` (translation) BEFORE `0x1009` (rotation)** — confirmed against `EI_DARKTROOPER_ONE_WALKMOVE_00.ALA` at offsets 2870 / 3568.
+- Pool data is a flat little-endian `int16` stream of size `n_*_words × n_frames × component_count`.
+
+Verification layers (per the rigorous-testing convention):
+- 81/81 Catch2 unit tests (60 pre-existing + 21 new), covering struct synth, byte-identity round-trip of synthesised inputs, FoC detection, EaW path, pool LE encoding, empty-animation edges, malformed-input throws.
+- 1500/1500 FoC + 1363/1363 EaW corpus byte-identical via `ala_typed_roundtrip` CLI.
+- 4929/4929 `alo_roundtrip` chunk-tree round-trip unchanged.
+- 2066/2066 `.alo` corpus sweep unchanged.
+- 3× full-corpus determinism — identical pass counts every run.
+- `alo_dump` output identical across runs for 3 representative files (post-header).
+- 3 negative tripwires: corrupted top-level chunk ID → reader throws; swapped pool emission order → byte diff at offset 2870 (chunk ID `0A 10` vs `09 10`); mutated test assertion → ctest reports failure on the expected test. All reverted after demonstration.
 
 ### Phase 9 — Polish + v1 release
 
