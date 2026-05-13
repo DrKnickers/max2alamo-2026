@@ -42,6 +42,7 @@ Single-file project status + history. Open this first when picking up a new sess
 | 7c.2 | Walker: `Alamo_Proxy` instances → ExportProxy + harness tests | ✅ shipped | `walk_proxies` detects helpers by `Class_ID == kAlamoProxyClassID` (not name prefix); emits per-proxy synth bone + ExportProxy; reads `Alamo_Geometry_Hidden` (fallback to `IsNodeHidden()`) and `Alamo_Alt_Decrease_Stay_Hidden`; mutex with Phase 5e helpers-as-bones; 5 new harness tests; `.export.log` Proxies summary. |
 | 7d | Acceptance: full integration test (skinned mesh + bones + lights + proxies) | ✅ shipped | `test_phase7_acceptance` combines 2 real bones + helper-as-bone + skinned cylinder + static box + Omni + TargetSpot + 2 proxies in one scene (10 bones / 2 meshes / 2 lights / 2 proxies / 4 connections). Tier 1 strict clean, Tier 2 byte-identical, Tier 3 verifier with **31 interaction-shaped assertions** across 8 groups (skeleton/mutex/wiring/lights/proxies/connections/matrices/log) all pass; 3× byte-identical determinism (SHA `56FCEAF0…`); 24/24 harness, 60/60 unit, 2066/2066 corpus; tripwires confirm assertions actually bite. |
 | 8a | Format library: typed `.ala` read/write pipeline (`AlaAnimation` struct + `build_ala` + `read_ala` + `ala_typed_roundtrip` CLI + 21 Catch2 tests) | ✅ shipped | **2863/2863 vanilla `.ala` byte-identical** via typed pipeline (1500/1500 FoC + 1363/1363 EaW — exceeded plan's parse-clean bar for EaW). Design key: typed fields + raw payload preservation per leaf, so read-then-write is identity by construction. 3× full-corpus determinism; `alo_dump` output identical across runs; 81/81 unit tests; non-regression on `alo_roundtrip` (4929/4929) and `.alo` corpus sweep (2066/2066); three negative tripwires fire on the expected assertion. |
+| 8b | Walker rotation pass: `walk_animation()` samples `IGameNode::GetLocalTM(t)` per frame for every bone in `bone_map`; packs int16 XYZW with sign canonicalisation; exporter writes `.ala` next to `.alo` when at least one bone has a rotation track | ✅ shipped | `test_rotation_keyframes` (single bone keyframed 0°→90° about Z over 31 frames) round-trips through Tier 1 (`.alo` strict), Tier 2 (chunk-tree), Tier 2-ala (typed pipeline), Tier 3 (17-assertion verifier). Frame[0]=(0,0,0,1), frame[30]=(0,0,0.7071,0.7071) within 1e-3. 25/25 harness (existing 24 still produce only `.alo`; no spurious `.ala`); 3× byte-identical determinism (`.alo` `3791F274…`, `.ala` `2B60515B…`); existing test_phase7_acceptance still SHA `56FCEAF0…` post-rebuild. Non-regression: 4929/4929 chunk-tree · 2066/2066 .alo sweep · 2863/2863 .ala typed-pipeline · 81/81 unit. Three negative tripwires fire on the expected assertion. |
 | Utility UI | Faithful clone of the legacy PG Alamo Utility panel | ✅ shipped | Three rollouts (Node Export Options / Quick Selection / Animation Settings) appear under Utilities > More... > Alamo Utility; checkboxes/radios round-trip Alamo_* user properties on the selected node |
 | 6a | Effects11 shader stubs for Max 2026 | ✅ shipped | [PR #18](https://github.com/DrKnickers/max2alamo-2026/pull/18) — all 39 PG shaders load in Max 2026's DXSM with PG parameter UIs |
 | 6b | Per-vertex tangent + binormal export | ✅ shipped | [PR #19](https://github.com/DrKnickers/max2alamo-2026/pull/19) — MikkT via `IGameMesh::GetFaceVertexTangentBinormal`; bump shading works |
@@ -49,7 +50,7 @@ Single-file project status + history. Open this first when picking up a new sess
 | 6d | Coord-frame banner in `.export.log` | ✅ shipped | [PR #21](https://github.com/DrKnickers/max2alamo-2026/pull/21) — every export documents `Z up, -Y forward, +X right` |
 | Test harness | Max-side regression suite | ✅ shipped | [PR #23](https://github.com/DrKnickers/max2alamo-2026/pull/23) + [#26](https://github.com/DrKnickers/max2alamo-2026/pull/26) — `scripts/run-max-tests.ps1` runs 6 end-to-end tests via `3dsmaxbatch` |
 | 7 | Lights, hardpoints, proxies | ✅ shipped | Format library + walker + helper plugin class all in place; 24/24 harness covers Omni/Directional/Spotlight/`.Target`/proxies/flags + the 7d full-scene integration. In-game fighter Tier 4 deferred to Phase 8/9. |
-| 8 | Animation export incl. visibility tracks | in progress | Walk cycle + animated visibility play correctly in-game. **Sub-phases:** 8a typed `.ala` read/write pipeline ✅; 8b walker rotation-only pass, 8c walker translation+scale + FoC pool packing, 8d visibility tracks, 8e full integration acceptance pending. |
+| 8 | Animation export incl. visibility tracks | in progress | Walk cycle + animated visibility play correctly in-game. **Sub-phases:** 8a typed `.ala` read/write pipeline ✅; 8b walker rotation pass ✅; 8c walker translation+scale + FoC pool packing, 8d visibility tracks, 8e full integration acceptance pending. |
 | 9 | Polish + v1 release | pending | v1.0 tag with `.dle` published via GitHub Releases |
 
 Each main phase has a corresponding GitHub issue (`#1` for Phase 0.5 through `#10` for Phase 9). Sub-phases (4c-fix, 5a/5b, 6a-d, test harness) shipped as standalone PRs without dedicated issues.
@@ -305,7 +306,7 @@ scripts/
 
 `powershell -File scripts/run-max-tests.ps1` discovers every `tests/maxscript/test_*.ms`, runs each through 3dsmaxbatch when its cached output is stale (or the installed `.dle` is newer), dispatches the paired Python verifier, and reports pass/fail. Timestamp-based caching saves the ~25-second Max boot per test on no-op runs.
 
-Current coverage (24 tests, all green):
+Current coverage (25 tests, all green):
 
 | Test | Pins behaviour from |
 |---|---|
@@ -333,6 +334,7 @@ Current coverage (24 tests, all green):
 | `test_proxy_mesh_light_combined` | Phase 7c.2 — mesh + light + proxies coexist; connection table covers mesh + light only, proxies have their own 0x603 chunks |
 | `test_proxy_mutex_helper_as_bone` | Phase 7c.2 — Alamo_Proxy detection wins over `Alamo_Export_Transform`; non-proxy helpers still respect Phase 5e |
 | `test_phase7_acceptance` | Phase 7d — multi-feature acceptance: skinned cylinder + 2-bone chain + helper-as-bone + static box + Omni + TargetSpot + 2 proxies in one scene; **31 interaction-shaped assertions** across 8 groups (skeleton composition, mutex enforcement, mesh wiring, lights, proxies, connection accounting, bone-matrix orthonormality, `.export.log` cross-check) |
+| `test_rotation_keyframes` | Phase 8b — single bone keyframed 0°→90° about Z over 31 frames; emits sibling `.ala` with FoC framing + `0x1009` rotation pool. **17-assertion verifier** covers chunk structure, FoC mini-chunks, pool size, idx_rotation per bone, frame[0] ≈ identity / frame[30] ≈ 90°-Z within 1e-3, unit-length quats, sign-canonicalisation continuity |
 
 The harness is **not CI-runnable** (needs Max install + license seat). It's an on-demand local tool; CI keeps the format-library tests.
 
@@ -514,6 +516,24 @@ Verification layers (per the rigorous-testing convention):
 - 3× full-corpus determinism — identical pass counts every run.
 - `alo_dump` output identical across runs for 3 representative files (post-header).
 - 3 negative tripwires: corrupted top-level chunk ID → reader throws; swapped pool emission order → byte diff at offset 2870 (chunk ID `0A 10` vs `09 10`); mutated test assertion → ctest reports failure on the expected test. All reverted after demonstration.
+
+### Phase 8b — Walker rotation pass (shipped)
+
+Adds `walk_animation()` as a fifth pass after `walk_proxies` in `max2alamo/src/scene_walker.cpp`. The walker reads `Alamo_Anim_Start` / `Alamo_Anim_End` / `Alamo_Anim_Name` user properties from the scene-root node (via `Interface::GetRootNode()`), then for every bone in `bone_map` (real Max bones + Phase 5e helpers-as-bones) samples `IGameNode::GetLocalTM(t)` per frame, extracts rotation-only (drops scale by normalising the 3×3 columns to unit length), converts to `Quat`, and packs to int16 XYZW with sign canonicalisation against the previous frame (so the controller's quat-hemisphere flips don't produce playback twists).
+
+`walk_scene` signature extended to `bool walk_scene(Interface*, ExportScene&, AlaAnimation&, std::string&)`. `DoExport()` in `alo_export.cpp` writes a sibling `<name>.ala` after the `.alo` when `AlaAnimation` has at least one bone with `idx_rotation >= 0`. Existing 24 harness tests don't author `Alamo_Anim_*`, so they produce only `.alo` — no spurious `.ala`. The `.export.log` gains an "Animation:" line when a `.ala` is emitted.
+
+`scripts/run-max-tests.ps1` gains a Tier 2-ala step: after the `.alo` tiers, if a sibling `.ala` exists, `ala_typed_roundtrip` is invoked on it. Skipped silently when no `.ala` is present.
+
+Out of 8b scope (deferred to 8c/8d): translation tracks (`0x100a`), scale tracks, visibility tracks (`0x1007`), FoC pool deduplication.
+
+Pinned signals:
+- New harness test `test_rotation_keyframes` (single bone, 0°→90° about Z over 31 frames). 17-assertion verifier covers chunk structure, FoC framing, pool size = `n_frames × n_rot_words × 2`, idx_rotation = 0 on TestBone / -1 on others, frame[0] ≈ identity within 1e-3, frame[30] ≈ `(0, 0, 0.7071, 0.7071)` within 1e-3, unit-length quats within 1e-2, sign-canonicalisation continuity.
+- Full harness: 25/25. Existing 24 produce only `.alo` (no spurious siblings).
+- Byte-identity of existing exports unchanged after plugin rebuild — verified by re-exporting `test_phase7_acceptance` and confirming SHA `56FCEAF0…` matches the pre-8b cache.
+- 3× byte-identical determinism on the new test (`.alo` SHA `3791F274…`, `.ala` SHA `2B60515B…`).
+- Non-regression: 4929/4929 `alo_roundtrip` · 2066/2066 `.alo` sweep · 2863/2863 `.ala` typed-pipeline · 81/81 unit.
+- Three negative tripwires: drop the `animate on` block → frame quats wrong (#13/#14); change `Alamo_Anim_End` to 15 → `n_frames = 16` (#3); corrupt the writer to emit `n_translation_words = 3` → assertion #7 fails. All reverted post-demonstration.
 
 ### Phase 9 — Polish + v1 release
 

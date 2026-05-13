@@ -5,6 +5,7 @@
 // repo that touches Max's scene-traversal API; everything past the
 // resulting ExportScene is host-agnostic and unit-testable.
 
+#include "alamo_format/ala_anim.h"
 #include "alamo_format/export_scene.h"
 
 #include <string>
@@ -13,16 +14,23 @@ class Interface;  // <maxapi.h> -- forward-declared to avoid pulling Max.h here
 
 namespace max2alamo {
 
-// Populates `out` with the current scene's exportable meshes (Phase 4
-// scope: top-level mesh nodes, single-material per submesh, no skin,
-// no transforms baked in beyond what IGame returns in object space).
+// Populates `out_scene` with the current scene's exportable meshes /
+// bones / lights / proxies, and `out_anim` with sampled per-frame
+// rotation tracks (Phase 8b scope: FoC format, rotation only).
+//
+// Animation sampling reads `Alamo_Anim_Start` / `Alamo_Anim_End` /
+// `Alamo_Anim_Name` user properties from the scene-root node. If those
+// are absent or yield an invalid range, `out_anim` stays default-
+// constructed (no animation data; the caller should skip the .ala
+// write).
 //
 // On failure, returns false and writes a one-line description into
-// `out_error`. Always seeds `out` with one synthetic Root bone via
-// ExportScene::with_root_bone() before walking, even on failure --
+// `out_error`. Always seeds `out_scene` with one synthetic Root bone
+// via ExportScene::with_root_bone() before walking, even on failure --
 // callers can choose to ship a meshless-but-well-formed file or abort.
 bool walk_scene(Interface*                  max_interface,
-                alamo_format::ExportScene&  out,
+                alamo_format::ExportScene&  out_scene,
+                alamo_format::AlaAnimation& out_anim,
                 std::string&                out_error);
 
 // Walk the scene a second time and emit a human-readable diagnostic
