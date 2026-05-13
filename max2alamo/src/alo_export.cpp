@@ -166,7 +166,11 @@ int AloExport::DoExport(const TCHAR*  name,
     {
         bool has_anim_track = false;
         for (const auto& b : anim.bones) {
-            if (b.idx_rotation >= 0 || b.idx_translation >= 0) {
+            if (b.idx_rotation >= 0 || b.idx_translation >= 0 ||
+                !b.track_leaves.empty()) {
+                // Phase 8d: track_leaves carries 0x1007 visibility chunks.
+                // A scene with ONLY animated visibility (e.g. a lone
+                // blinking light) still needs the sibling .ala.
                 has_anim_track = true; break;
             }
         }
@@ -204,14 +208,21 @@ int AloExport::DoExport(const TCHAR*  name,
         log_material_diagnostics(i, log);
         log_scene_summary(scene, log);
         if (wrote_ala) {
-            char anim_line[200];
+            // Phase 8d: count visibility-track emitters across all bones.
+            std::size_t n_vis_tracks = 0;
+            for (const auto& b : anim.bones) {
+                for (const auto& leaf : b.track_leaves) {
+                    if (leaf.id == 0x1007) { ++n_vis_tracks; break; }
+                }
+            }
+            char anim_line[256];
             std::snprintf(anim_line, sizeof(anim_line),
                 "\nAnimation: %u frames @ %.2f fps, %zu bone(s), "
-                "%u rotation word(s), %u translation word(s); "
-                ".ala = %zu bytes\n",
+                "%u rotation word(s), %u translation word(s), "
+                "%zu visibility track(s); .ala = %zu bytes\n",
                 anim.n_frames, static_cast<double>(anim.fps),
                 anim.bones.size(), anim.n_rotation_words,
-                anim.n_translation_words, ala_bytes_written);
+                anim.n_translation_words, n_vis_tracks, ala_bytes_written);
             log += anim_line;
         }
         std::wstring log_path = std::wstring(name) + L".export.log";
