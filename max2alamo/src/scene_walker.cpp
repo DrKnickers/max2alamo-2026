@@ -1096,6 +1096,36 @@ std::array<std::int16_t, 4> pack_quat_int16(const Quat& q)
     return { pack(q.x), pack(q.y), pack(q.z), pack(q.w) };
 }
 
+// Pack a per-frame translation Point3 to uint16[3] per the .ala convention
+// (per-bone offset + scale unpacking). The result is bit-reinterpreted as
+// int16[3] so the AlaAnimation::translation_pool (typed int16) can hold it
+// alongside the rotation pool; the reader casts back to uint16 before
+// applying offset + scale, so the bit pattern is what matters.
+//
+// Constant-axis guard: if scale[i] == 0 (axis didn't change across the
+// range), packed[i] = 0; runtime unpacks to offset[i] + 0*0 = offset[i],
+// which is the correct constant value.
+std::array<std::int16_t, 3> pack_translation_uint16(
+    const Point3& p, const float offset[3], const float scale[3])
+{
+    std::array<std::int16_t, 3> out{};
+    const float pv[3] = { p.x, p.y, p.z };
+    for (int i = 0; i < 3; ++i) {
+        if (scale[i] > 0.0f) {
+            float v = std::round((pv[i] - offset[i]) / scale[i]);
+            if (v < 0.0f)     v = 0.0f;
+            if (v > 65535.0f) v = 65535.0f;
+            const std::uint16_t u = static_cast<std::uint16_t>(v);
+            std::int16_t s;
+            std::memcpy(&s, &u, sizeof(s));
+            out[i] = s;
+        } else {
+            out[i] = 0;
+        }
+    }
+    return out;
+}
+
 // Extract rotation-only Quat from a Matrix3 (drop scale by normalising
 // each column of the upper-left 3x3 to unit length, then construct a
 // Quat from the resulting rotation matrix).
@@ -1162,27 +1192,32 @@ void walk_animation(IGameScene* igame,
     for (int i = 0; i < top; ++i) visit(igame->GetTopLevelNode(i));
 
     // First pass: create one AlaBoneTrack per ExportScene bone; assign
-    // idx_rotation for each animatable bone.
+    // idx_rotation AND idx_translation slots for each animatable bone
+    // (Phase 8b assigned rotation only; Phase 8c also assigns translation).
     out_anim.is_foc   = true;
     out_anim.n_frames = static_cast<std::uint32_t>(n_frames);
     out_anim.fps      = static_cast<float>(::GetFrameRate());
     out_anim.bones.reserve(scene.bones.size());
 
-    std::int16_t next_slot = 0;
+    std::int16_t rot_next   = 0;
+    std::int16_t trans_next = 0;
     for (std::size_t i = 0; i < scene.bones.size(); ++i) {
         alamo_format::AlaBoneTrack t;
         t.name            = scene.bones[i].name;
         t.skeleton_index  = static_cast<std::uint32_t>(i);
-        // trans_offset / scale_offset etc. left at struct defaults
-        // (Phase 8c will populate these from per-frame min/max).
         if (animatable[i] != nullptr) {
-            t.idx_rotation = next_slot;
-            next_slot = static_cast<std::int16_t>(next_slot + 4);
+            t.idx_rotation    = rot_next;
+            t.idx_translation = trans_next;
+            rot_next   = static_cast<std::int16_t>(rot_next + 4);
+            trans_next = static_cast<std::int16_t>(trans_next + 3);
         }
+        // idx_scale stays at -1 (struct default). Scale tracks are absent
+        // from vanilla FoC content (0/1500 corpus files have nScaleWords>0)
+        // and the format defines no scale-pool chunk ID.
         out_anim.bones.push_back(std::move(t));
     }
-    out_anim.n_rotation_words    = static_cast<std::uint32_t>(next_slot);
-    out_anim.n_translation_words = 0;
+    out_anim.n_rotation_words    = static_cast<std::uint32_t>(rot_next);
+    out_anim.n_translation_words = static_cast<std::uint32_t>(trans_next);
     out_anim.n_scale_words       = 0;
 
     // Set default_rotation per bone (sample at start frame).
@@ -1197,18 +1232,30 @@ void walk_animation(IGameScene* igame,
         out_anim.bones[i].default_rotation = pack_quat_int16(q);
     }
 
-    if (next_slot == 0) {
-        // No animatable bones -> no rotation pool. Leave default-empty.
+    if (rot_next == 0) {
+        // No animatable bones -> no rotation/translation pools. Leave empty.
         return;
     }
 
     // Allocate the rotation pool: nFrames * nRotationWords int16.
     out_anim.rotation_pool.assign(
-        static_cast<std::size_t>(n_frames) * static_cast<std::size_t>(next_slot),
+        static_cast<std::size_t>(n_frames) * static_cast<std::size_t>(rot_next),
         std::int16_t{0});
 
-    // Second pass: sample per frame, pack with sign canonicalisation
-    // against the previous frame's quat for each bone.
+    // Phase 8c: also collect raw per-frame translations so the second
+    // sweep can compute per-bone min/max -> offset/scale -> uint16 packing.
+    // One Point3 per (animatable bone, frame). Synthetic bones get empty
+    // vectors (we never sample them).
+    std::vector<std::vector<Point3>> raw_trans(scene.bones.size());
+    for (std::size_t i = 0; i < scene.bones.size(); ++i) {
+        if (animatable[i] != nullptr) {
+            raw_trans[i].assign(static_cast<std::size_t>(n_frames), Point3(0.f, 0.f, 0.f));
+        }
+    }
+
+    // Second pass: sample per frame. For each animatable bone we call
+    // GetLocalTM(t) once and extract BOTH rotation and translation from
+    // the resulting Matrix3 (no extra Max overhead vs Phase 8b).
     std::vector<Quat> previous_quat(scene.bones.size(), Quat(0.f, 0.f, 0.f, 1.f));
     std::vector<std::uint8_t> seen(scene.bones.size(), 0);  // 0 = first-frame placeholder
     for (int f = 0; f < n_frames; ++f) {
@@ -1218,9 +1265,9 @@ void walk_animation(IGameScene* igame,
             auto it = max_to_igame.find(animatable[i]);
             if (it == max_to_igame.end()) continue;
             const Matrix3 m = it->second->GetLocalTM(t).ExtractMatrix3();
-            Quat q          = extract_rotation_quat(m);
 
-            // Sign canonicalisation: if dot(q, previous) < 0, negate q.
+            // Rotation (8b path, unchanged): extract Quat + sign-canonicalise + pack.
+            Quat q = extract_rotation_quat(m);
             if (seen[i]) {
                 const Quat& p = previous_quat[i];
                 const float d = q.x*p.x + q.y*p.y + q.z*p.z + q.w*p.w;
@@ -1230,15 +1277,68 @@ void walk_animation(IGameScene* igame,
             }
             previous_quat[i] = q;
             seen[i] = 1;
-
-            const auto packed = pack_quat_int16(q);
-            const std::size_t base =
-                static_cast<std::size_t>(f) * static_cast<std::size_t>(next_slot)
+            const auto packed_q = pack_quat_int16(q);
+            const std::size_t base_rot =
+                static_cast<std::size_t>(f) * static_cast<std::size_t>(rot_next)
                 + static_cast<std::size_t>(out_anim.bones[i].idx_rotation);
-            out_anim.rotation_pool[base + 0] = packed[0];
-            out_anim.rotation_pool[base + 1] = packed[1];
-            out_anim.rotation_pool[base + 2] = packed[2];
-            out_anim.rotation_pool[base + 3] = packed[3];
+            out_anim.rotation_pool[base_rot + 0] = packed_q[0];
+            out_anim.rotation_pool[base_rot + 1] = packed_q[1];
+            out_anim.rotation_pool[base_rot + 2] = packed_q[2];
+            out_anim.rotation_pool[base_rot + 3] = packed_q[3];
+
+            // Translation (8c new): stash raw Point3 for the post-loop
+            // min/max scan and packing pass.
+            raw_trans[i][static_cast<std::size_t>(f)] = m.GetRow(3);
+        }
+    }
+
+    // Phase 8c: post-loop translation packing. For each animatable bone:
+    //   - scan raw_trans[i] to compute per-axis min/max
+    //   - set bones[i].trans_offset = min; trans_scale = (max-min)/65535
+    //   - pack each frame's Point3 to uint16[3]; write to translation_pool
+    if (trans_next > 0) {
+        out_anim.translation_pool.assign(
+            static_cast<std::size_t>(n_frames) * static_cast<std::size_t>(trans_next),
+            std::int16_t{0});
+        for (std::size_t i = 0; i < scene.bones.size(); ++i) {
+            if (out_anim.bones[i].idx_translation < 0) continue;
+            const auto& samples = raw_trans[i];
+            // Init min/max with frame 0.
+            Point3 minp = samples[0];
+            Point3 maxp = samples[0];
+            for (std::size_t f = 1; f < samples.size(); ++f) {
+                const Point3& p = samples[f];
+                if (p.x < minp.x) minp.x = p.x;
+                if (p.y < minp.y) minp.y = p.y;
+                if (p.z < minp.z) minp.z = p.z;
+                if (p.x > maxp.x) maxp.x = p.x;
+                if (p.y > maxp.y) maxp.y = p.y;
+                if (p.z > maxp.z) maxp.z = p.z;
+            }
+            float offset[3] = { minp.x, minp.y, minp.z };
+            float scale[3]  = {
+                (maxp.x - minp.x) / 65535.0f,
+                (maxp.y - minp.y) / 65535.0f,
+                (maxp.z - minp.z) / 65535.0f,
+            };
+            // Snap negative-zero / sub-epsilon scale to exactly 0 so the
+            // packer's `scale[i] > 0` guard fires deterministically.
+            for (int axis = 0; axis < 3; ++axis) {
+                if (scale[axis] < 1e-9f) scale[axis] = 0.0f;
+            }
+            for (int axis = 0; axis < 3; ++axis) {
+                out_anim.bones[i].trans_offset[axis] = offset[axis];
+                out_anim.bones[i].trans_scale[axis]  = scale[axis];
+            }
+            for (int f = 0; f < n_frames; ++f) {
+                const auto packed_t = pack_translation_uint16(samples[f], offset, scale);
+                const std::size_t base_trans =
+                    static_cast<std::size_t>(f) * static_cast<std::size_t>(trans_next)
+                    + static_cast<std::size_t>(out_anim.bones[i].idx_translation);
+                out_anim.translation_pool[base_trans + 0] = packed_t[0];
+                out_anim.translation_pool[base_trans + 1] = packed_t[1];
+                out_anim.translation_pool[base_trans + 2] = packed_t[2];
+            }
         }
     }
 }
