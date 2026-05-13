@@ -14,7 +14,27 @@
 -- Run the whole suite:
 --   pwsh scripts/run-max-tests.ps1
 
-global alamoRepoRoot = "C:/Modding/max2alamo-2026"
+-- Derive the repo root from this script's own location so the harness
+-- works from any worktree (the main checkout AND .claude/worktrees/...).
+-- getSourceFileName() returns the full path to the .ms currently being
+-- executed; we climb three levels (_harness.ms -> maxscript -> tests ->
+-- <repo>). If the call fails for any reason (e.g. running from the
+-- listener or a future Max version), fall back to the legacy hardcoded
+-- path so the existing behavior is preserved.
+fn alamoComputeRepoRoot =
+(
+    local me = undefined
+    try ( me = getSourceFileName() ) catch ( me = undefined )
+    if me == undefined or me == "" then
+        return "C:/Modding/max2alamo-2026"
+    local d = pathConfig.removePathLeaf me        -- <repo>/tests/maxscript
+    d = pathConfig.removePathLeaf d               -- <repo>/tests
+    d = pathConfig.removePathLeaf d               -- <repo>
+    substituteString d "\\" "/"
+)
+
+global alamoRepoRoot = alamoComputeRepoRoot()
+format "[harness] repo root resolved to: %\n" alamoRepoRoot
 
 fn alamoTestSetup =
 (

@@ -630,9 +630,19 @@ bool is_exportable_bone(IGameNode* node)
 //
 // Phase 5b: `bone_map` records (INode* -> ExportScene bone index) for
 // every emitted bone, so walk_node can resolve IGameSkin's bone refs.
+// Phase 8d: `visibility_map` is a BROADER (INode* -> bone_index) map than
+// `bone_map`. Every emitted bone whose synth comes from a Max-side INode
+// (real bones, helpers-as-bones, light synth bones, .Target siblings,
+// proxy synth bones, static-mesh attachment bones) records itself here
+// so walk_animation can sample INode::GetVisibility(t) per frame.
+//
+// We deliberately keep bone_map narrow (real bones + helpers-as-bones)
+// so rotation/translation track emission isn't expanded to light/proxy/
+// mesh synth bones -- that would break the Phase 8b/8c gold SHAs.
 void walk_bones(IGameNode* node, std::uint32_t parent_bone_idx,
                 alamo_format::ExportScene& scene,
-                std::unordered_map<INode*, std::uint32_t>& bone_map)
+                std::unordered_map<INode*, std::uint32_t>& bone_map,
+                std::unordered_map<INode*, std::uint32_t>& visibility_map)
 {
     if (!node) return;
     std::uint32_t my_idx = parent_bone_idx;
@@ -659,12 +669,13 @@ void walk_bones(IGameNode* node, std::uint32_t parent_bone_idx,
             compose_with_object_offset(node->GetMaxNode(), node_tm));
         my_idx = static_cast<std::uint32_t>(scene.bones.size());
         if (INode* max_inode = node->GetMaxNode()) {
-            bone_map[max_inode] = my_idx;
+            bone_map[max_inode]       = my_idx;
+            visibility_map[max_inode] = my_idx;
         }
         scene.bones.push_back(std::move(bone));
     }
     for (int i = 0; i < node->GetChildCount(); ++i) {
-        walk_bones(node->GetNodeChild(i), my_idx, scene, bone_map);
+        walk_bones(node->GetNodeChild(i), my_idx, scene, bone_map, visibility_map);
     }
 }
 
@@ -724,7 +735,8 @@ void read_light_color(IGameProperty* prop, std::array<float, 3>& out)
 // in the top-level traversal) and emits an ExportLight + synth
 // bone for each Omni / Directional. Spotlights are skipped this
 // phase (7b.2 will add them with their target-bone partner).
-void walk_lights(IGameScene* igame, alamo_format::ExportScene& scene)
+void walk_lights(IGameScene* igame, alamo_format::ExportScene& scene,
+                 std::unordered_map<INode*, std::uint32_t>& visibility_map)
 {
     if (!igame) return;
     Tab<IGameNode*> light_nodes =
@@ -792,6 +804,12 @@ void walk_lights(IGameScene* igame, alamo_format::ExportScene& scene)
         }
 
         light.bone_index = static_cast<std::uint32_t>(scene.bones.size());
+        // Phase 8d: record the light's synth bone in visibility_map
+        // BEFORE the push (we own the index now). Animated visibility on
+        // the light propagates to the bone's 0x1007 track.
+        if (INode* light_inode = node->GetMaxNode()) {
+            visibility_map[light_inode] = light.bone_index;
+        }
         scene.bones.push_back(std::move(synth_bone));
 
         // Phase 7b.2: if the light has a Max-side target node
@@ -814,6 +832,9 @@ void walk_lights(IGameScene* igame, alamo_format::ExportScene& scene)
                 Matrix3 tm = target_inode->GetNodeTM(0);
                 tgt_bone.matrix = encode_matrix3(
                     compose_with_object_offset(target_inode, tm));
+                // Phase 8d: record .Target sibling bone too.
+                visibility_map[target_inode] =
+                    static_cast<std::uint32_t>(scene.bones.size());
                 scene.bones.push_back(std::move(tgt_bone));
             }
         }
@@ -857,7 +878,8 @@ bool is_alamo_proxy_node(IGameNode* gnode)
     return obj->ClassID() == kAlamoProxyClassID;
 }
 
-void walk_proxies(IGameScene* igame, alamo_format::ExportScene& scene)
+void walk_proxies(IGameScene* igame, alamo_format::ExportScene& scene,
+                  std::unordered_map<INode*, std::uint32_t>& visibility_map)
 {
     if (!igame) return;
     Tab<IGameNode*> helpers =
@@ -903,6 +925,9 @@ void walk_proxies(IGameScene* igame, alamo_format::ExportScene& scene)
         }
 
         proxy.bone_index = static_cast<std::uint32_t>(scene.bones.size());
+        // Phase 8d: record proxy synth bone in visibility_map so animated
+        // visibility on the helper propagates to the bone's 0x1007 track.
+        visibility_map[inode] = proxy.bone_index;
         scene.bones.push_back(std::move(synth_bone));
         scene.proxies.push_back(std::move(proxy));
     }
@@ -914,7 +939,8 @@ void walk_proxies(IGameScene* igame, alamo_format::ExportScene& scene)
 //     weight) populate slots 0..3 of bone_indices / weights via the
 //     IGameSkin modifier, renormalized to sum to 1.0.
 void walk_node(IGameNode* node, alamo_format::ExportScene& scene,
-               const std::unordered_map<INode*, std::uint32_t>& bone_map)
+               const std::unordered_map<INode*, std::uint32_t>& bone_map,
+               std::unordered_map<INode*, std::uint32_t>& visibility_map)
 {
     if (!node) return;
 
@@ -932,7 +958,7 @@ void walk_node(IGameNode* node, alamo_format::ExportScene& scene,
                 !read_node_user_prop_bool(max_node, kPropExportGeometry, true)) {
                 node->ReleaseIGameObject();
                 for (int i = 0; i < node->GetChildCount(); ++i) {
-                    walk_node(node->GetNodeChild(i), scene, bone_map);
+                    walk_node(node->GetNodeChild(i), scene, bone_map, visibility_map);
                 }
                 return;
             }
@@ -977,6 +1003,14 @@ void walk_node(IGameNode* node, alamo_format::ExportScene& scene,
                 if (build_mesh(node, gmesh, ctx, mesh)) {
                     mesh.bone_index = connect_bone_index;
                     if (!is_skinned) {
+                        // Phase 8d: record the static-mesh attachment
+                        // bone in visibility_map so animated visibility
+                        // on the mesh propagates to the bone's 0x1007
+                        // track. Skinned meshes connect to Root and
+                        // have no per-mesh bone -- their visibility
+                        // comes from the bones they skin to (already
+                        // tracked via walk_bones).
+                        visibility_map[max_node] = connect_bone_index;
                         scene.bones.push_back(std::move(synth_bone));
                     }
                     scene.meshes.push_back(std::move(mesh));
@@ -987,7 +1021,7 @@ void walk_node(IGameNode* node, alamo_format::ExportScene& scene,
     }
 
     for (int i = 0; i < node->GetChildCount(); ++i) {
-        walk_node(node->GetNodeChild(i), scene, bone_map);
+        walk_node(node->GetNodeChild(i), scene, bone_map, visibility_map);
     }
 }
 
@@ -1172,6 +1206,29 @@ std::array<std::int16_t, 4> pack_quat_int16(const Quat& q)
     return { pack(q.x), pack(q.y), pack(q.z), pack(q.w) };
 }
 
+// Phase 8d: pack per-frame visibility (bool per frame) to bytes per the
+// .ala 0x1007 chunk convention. LSB-first per byte:
+//   byte_idx 0 bit 0 = frame 0
+//   byte_idx 0 bit 7 = frame 7
+//   byte_idx 1 bit 0 = frame 8
+//   ...
+// Bit SET = visible at that frame; bit CLEAR = hidden. Output size is
+// ceil(n_frames / 8) bytes; trailing bits in the last byte are 0.
+//
+// Reference: docs/format-notes.md:454-477 + alamo2max.ms:818-833.
+std::vector<std::uint8_t> pack_visibility_bits(const std::vector<bool>& visible_per_frame)
+{
+    const std::size_t n = visible_per_frame.size();
+    const std::size_t n_bytes = (n + 7) / 8;
+    std::vector<std::uint8_t> out(n_bytes, std::uint8_t{0});
+    for (std::size_t f = 0; f < n; ++f) {
+        if (visible_per_frame[f]) {
+            out[f / 8] |= static_cast<std::uint8_t>(1u << (f % 8));
+        }
+    }
+    return out;
+}
+
 // Pack a per-frame translation Point3 to uint16[3] per the .ala convention
 // (per-bone offset + scale unpacking). The result is bit-reinterpreted as
 // int16[3] so the AlaAnimation::translation_pool (typed int16) can hold it
@@ -1234,6 +1291,7 @@ const TCHAR* kPropAnimName  = _T("Alamo_Anim_Name");
 void walk_animation(IGameScene* igame,
                     Interface* max_interface,
                     const std::unordered_map<INode*, std::uint32_t>& bone_map,
+                    const std::unordered_map<INode*, std::uint32_t>& visibility_map,
                     const alamo_format::ExportScene& scene,
                     alamo_format::AlaAnimation& out_anim)
 {
@@ -1313,15 +1371,16 @@ void walk_animation(IGameScene* igame,
         out_anim.bones[i].default_rotation = pack_quat_int16(q);
     }
 
-    if (rot_next == 0) {
-        // No animatable bones -> no rotation/translation pools. Leave empty.
-        return;
+    // Phase 8d: don't early-return when rot_next == 0; the visibility pass
+    // below uses `visibility_map` (broader than bone_map) and may emit
+    // 0x1007 even on scenes with zero rotation/translation tracks (e.g.
+    // a lone blinking light).
+    if (rot_next > 0) {
+        // Allocate the rotation pool: nFrames * nRotationWords int16.
+        out_anim.rotation_pool.assign(
+            static_cast<std::size_t>(n_frames) * static_cast<std::size_t>(rot_next),
+            std::int16_t{0});
     }
-
-    // Allocate the rotation pool: nFrames * nRotationWords int16.
-    out_anim.rotation_pool.assign(
-        static_cast<std::size_t>(n_frames) * static_cast<std::size_t>(rot_next),
-        std::int16_t{0});
 
     // Phase 8c: also collect raw per-frame translations so the second
     // sweep can compute per-bone min/max -> offset/scale -> uint16 packing.
@@ -1425,6 +1484,43 @@ void walk_animation(IGameScene* igame,
             }
         }
     }
+
+    // Phase 8d: visibility tracks. THIRD pass over visibility_map (which
+    // is broader than bone_map -- includes light, proxy, and static-mesh
+    // attachment bones). For each source INode, sample
+    // INode::GetVisibility(t) per frame; threshold at 0.5. If ANY frame
+    // is hidden, append a 0x1007 leaf chunk to that bone's
+    // track_leaves (which AlaBoneTrack carries verbatim through
+    // build_ala from Phase 8a). Constant-visible bones emit no chunk --
+    // matches vanilla "constant-visible elision".
+    //
+    // Iteration order over an unordered_map is unspecified, but the
+    // per-bone emit goes into `out_anim.bones[bone_idx].track_leaves`,
+    // which is indexed by scene.bones order. The on-disk write order
+    // (build_ala) walks `out_anim.bones` linearly, so output bytes are
+    // deterministic regardless of map iteration order.
+    constexpr float kVisibleThreshold = 0.5f;
+    for (const auto& [inode, bone_idx] : visibility_map) {
+        if (!inode) continue;
+        if (bone_idx >= out_anim.bones.size()) continue;
+        std::vector<bool> visible(static_cast<std::size_t>(n_frames), true);
+        bool any_hidden = false;
+        for (int f = 0; f < n_frames; ++f) {
+            const TimeValue t = TimeValue((start + f) * ticks_per_frame);
+            const float v = inode->GetVisibility(t, nullptr);
+            const bool is_visible = (v >= kVisibleThreshold);
+            visible[static_cast<std::size_t>(f)] = is_visible;
+            if (!is_visible) any_hidden = true;
+        }
+        if (any_hidden) {
+            auto bytes = pack_visibility_bits(visible);
+            alamo_format::ChunkNode vis;
+            vis.id = 0x1007;
+            vis.is_container = false;
+            vis.payload = std::move(bytes);
+            out_anim.bones[bone_idx].track_leaves.push_back(std::move(vis));
+        }
+    }
 }
 
 // ---- Main entry points ----------------------------------------------------
@@ -1463,33 +1559,41 @@ bool walk_scene(Interface*                  max_interface,
     // skeleton before walk_node appends synthetic per-mesh bones.
     // bone_map records (Max INode* -> ExportScene bone index) for the
     // mesh-walk's skin resolver.
+    //
+    // Phase 8d: visibility_map is broader -- includes light/proxy/static-
+    // mesh synth bones too. Kept distinct from bone_map so rotation/
+    // translation track emission (which iterates bone_map) doesn't expand
+    // to those bones and break 8b/8c gold SHAs.
     std::unordered_map<INode*, std::uint32_t> bone_map;
+    std::unordered_map<INode*, std::uint32_t> visibility_map;
     for (int i = 0; i < top_count; ++i) {
-        walk_bones(igame->GetTopLevelNode(i), /*parent_bone_idx=*/0, out_scene, bone_map);
+        walk_bones(igame->GetTopLevelNode(i), /*parent_bone_idx=*/0,
+                   out_scene, bone_map, visibility_map);
     }
 
     // Pass 2: meshes. Skinned meshes attach to Root and reference real
     // bones per-vertex; static meshes still get a synthetic per-mesh
     // attachment bone (Phase 4c).
     for (int i = 0; i < top_count; ++i) {
-        walk_node(igame->GetTopLevelNode(i), out_scene, bone_map);
+        walk_node(igame->GetTopLevelNode(i), out_scene, bone_map, visibility_map);
     }
 
     // Pass 3 (Phase 7b.1/2): lights, including spotlights with their
     // .Target sibling bones.
-    walk_lights(igame, out_scene);
+    walk_lights(igame, out_scene, visibility_map);
 
     // Pass 4 (Phase 7c.2): Alamo_Proxy helpers (particle/effect
     // attachment points). Class_ID-based detection -- not name
     // prefix; users explicitly place these via Create > Helpers >
     // Standard > Alamo Proxy.
-    walk_proxies(igame, out_scene);
+    walk_proxies(igame, out_scene, visibility_map);
 
-    // Pass 5 (Phase 8b): animation. Samples real Max bones + helpers-
-    // as-bones in bone_map over the Alamo_Anim_Start..End range read
-    // from the scene-root user props. If no clip range authored,
-    // out_anim stays default-constructed (caller skips .ala write).
-    walk_animation(igame, max_interface, bone_map, out_scene, out_anim);
+    // Pass 5 (Phase 8b/8c/8d): animation. Samples real Max bones +
+    // helpers-as-bones in bone_map for rotation/translation tracks, and
+    // every bone in visibility_map for the per-frame visibility track
+    // (0x1007). If no clip range authored, out_anim stays default-
+    // constructed (caller skips .ala write).
+    walk_animation(igame, max_interface, bone_map, visibility_map, out_scene, out_anim);
 
     igame->ReleaseIGame();
     return true;
