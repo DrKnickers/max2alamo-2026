@@ -9,6 +9,7 @@
 
 #include "alo_export.h"
 #include "alamo_utility.h"
+#include "alamo_proxy_helper.h"
 
 #include <Max.h>
 #include <iparamb2.h>
@@ -51,7 +52,8 @@ extern "C" __declspec(dllexport) int LibNumberClasses()
 {
     // [0] AloExport (SceneExport)
     // [1] AlamoUtility (Utilities command panel)
-    return 2;
+    // [2] AlamoProxyHelper (Create panel > Helpers > Standard)
+    return 3;
 }
 
 extern "C" __declspec(dllexport) ClassDesc* LibClassDesc(int i)
@@ -59,6 +61,7 @@ extern "C" __declspec(dllexport) ClassDesc* LibClassDesc(int i)
     switch (i) {
         case 0:  return &g_alo_export_desc;
         case 1:  return max2alamo::GetAlamoUtilityClassDesc();
+        case 2:  return max2alamo::GetAlamoProxyHelperClassDesc();
         default: return nullptr;
     }
 }

@@ -42,6 +42,7 @@ add_library(max2alamo SHARED
     src/alo_export.cpp
     src/scene_walker.cpp
     src/alamo_utility.cpp
+    src/alamo_proxy_helper.cpp
     resources/max2alamo.def
     resources/max2alamo.rc
     resources/utility_dialogs.rc
