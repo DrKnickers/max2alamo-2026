@@ -219,9 +219,10 @@ std::vector<alamo_format::MaterialParam> extract_pblock_params(IParamBlock2* pbl
 // user property to choose the actual Alamo shader.
 constexpr const TCHAR* kShaderOverrideKey   = _T("Alamo_Shader_Name");
 
-// Phase 5d: Alamo_* user-prop family written by the Utility panel.
+// Phase 5d/5e: Alamo_* user-prop family written by the Utility panel.
 // Names must match alamo_utility.cpp's kProp* constants byte-for-byte
 // so the read side (here) sees what the write side (panel) stored.
+constexpr const TCHAR* kPropExportTransform = _T("Alamo_Export_Transform");
 constexpr const TCHAR* kPropExportGeometry  = _T("Alamo_Export_Geometry");
 constexpr const TCHAR* kPropCollisionEnabled= _T("Alamo_Collision_Enabled");
 constexpr const TCHAR* kPropGeometryHidden  = _T("Alamo_Geometry_Hidden");
@@ -523,19 +524,33 @@ std::array<float, 12> encode_matrix3(const Matrix3& m3)
     };
 }
 
-// Phase 5a: is this IGameNode an "exportable bone"? For now we accept
-// IGAME_BONE only (regular Max bones). Future work folds in:
-//   - IGAME_BIPED subtypes (Phase 5b/c)
-//   - Helpers (Point / Dummy / Arrow) tagged with the
-//     Alamo_Export_Transform user property (Phase 5d)
+// Is this IGameNode an "exportable bone"? Two categories accepted:
+//   - IGAME_BONE      (Phase 5a): regular Max bones. Auto-exported;
+//                     no user-prop opt-in required, to preserve the
+//                     "every bone in the scene becomes a bone in the
+//                     .alo" contract the test corpus relies on.
+//   - IGAME_HELPER    (Phase 5e): Point / Dummy / Arrow helpers
+//                     tagged with `Alamo_Export_Transform=true`.
+//                     Opt-in because most scenes have helpers that
+//                     aren't meant to be exported (lookat targets,
+//                     authoring rigs, reference geometry, etc.).
+// Future:
+//   - IGAME_BIPED subtypes are wired up implicitly via IGAME_BONE
+//     (Biped bones report as bones to IGame).
 bool is_exportable_bone(IGameNode* node)
 {
     if (!node) return false;
     IGameObject* obj = node->GetIGameObject();
     if (!obj) return false;
-    const bool is_bone = (obj->GetIGameType() == IGameObject::IGAME_BONE);
+    const auto type = obj->GetIGameType();
     node->ReleaseIGameObject();
-    return is_bone;
+
+    if (type == IGameObject::IGAME_BONE) return true;
+    if (type == IGameObject::IGAME_HELPER) {
+        return read_node_user_prop_bool(node->GetMaxNode(),
+                                        kPropExportTransform, false);
+    }
+    return false;
 }
 
 // Phase 5a bone-hierarchy walk. Runs BEFORE the mesh walk in walk_scene
