@@ -8,8 +8,17 @@
     1. If the .alo output is older than the .ms script OR older than
        the installed max2alamo.dle, invoke 3dsmaxbatch to re-export.
        Otherwise reuse the cached output.
-    2. Run tests/maxscript/verify/verify_<test_name>.py against the
-       resulting .alo. Pass if it exits 0.
+    2. Tier 1 -- universal invariants via validate_alo.py
+       (skeleton structure, mesh structure, skinning weights,
+       connection sanity). Same checks for every .alo.
+    3. Tier 2 -- writer round-trip via alo_roundtrip.exe
+       (asserts byte-identical re-emission; catches writer regressions).
+    4. Tier 3 -- bespoke verify_<test_name>.py
+       (pins the specific feature the test was written to cover).
+
+  All three tiers must pass for the test to be green. Tier 4 (Mike's
+  importer / AloViewer / in-game rendering) is the manual checklist
+  in docs/build.md; this script doesn't attempt it.
 
   Each Max boot is ~25 seconds, so the cache saves real time when only
   some tests' inputs changed. Pass -Force to re-export everything.
@@ -120,12 +129,43 @@ foreach ($t in $tests) {
         Write-Host -NoNewline "(cached) "
     }
 
+    # Tier 1: universal invariant validator. Runs on every .alo
+    # regardless of which test produced it -- catches structural /
+    # skinning / connection regressions that test-specific verifiers
+    # might miss. Lives in tests/maxscript/verify/validate_alo.py.
+    $validatePy = Join-Path $verifyDir 'validate_alo.py'
+    $validateOut = & python $validatePy $aloPath 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "FAIL (Tier 1: universal invariants)" -ForegroundColor Red
+        $validateOut | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+        $fail++; $failed += $name
+        continue
+    }
+
+    # Tier 2: writer round-trip. Re-emit the exported .alo through the
+    # alo_roundtrip CLI; non-zero exit = the writer's re-serialisation
+    # diverges from the original bytes. Catches writer regressions for
+    # free -- no per-test boilerplate.
+    $roundtripExe = Join-Path $repoRoot 'build\tools\alo_roundtrip\Release\alo_roundtrip.exe'
+    if (Test-Path $roundtripExe) {
+        $rtOut = & $roundtripExe $aloPath 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "FAIL (Tier 2: alo_roundtrip)" -ForegroundColor Red
+            $rtOut | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+            $fail++; $failed += $name
+            continue
+        }
+    } else {
+        Write-Warning "alo_roundtrip.exe not found; skipping Tier 2 (build the format library + tools to enable)"
+    }
+
+    # Tier 3: feature-specific verifier (the bespoke verify_<name>.py).
     $verifyOut = & python $verifyPy $aloPath 2>&1
     if ($LASTEXITCODE -eq 0) {
         Write-Host "OK   $verifyOut" -ForegroundColor Green
         $pass++
     } else {
-        Write-Host "FAIL" -ForegroundColor Red
+        Write-Host "FAIL (Tier 3: $verifyPy)" -ForegroundColor Red
         $verifyOut | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
         $fail++; $failed += $name
     }

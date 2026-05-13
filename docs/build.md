@@ -81,3 +81,32 @@ This produces the static lib, both CLIs, the `.dle` (if SDK present), and the te
 ## CI
 
 GitHub Actions builds only the SDK-independent targets (`alamo_format`, `alo_dump`, `alo_roundtrip`, tests). The Max plugin is built locally by contributors and attached to GitHub Releases as a downloadable artifact at version tags.
+
+## Testing the export pipeline
+
+Every plugin / walker / format-library change must pass the full export test pyramid before merge. Tiers 1–3 are automated by `scripts/run-max-tests.ps1`; Tier 4 is a manual checklist.
+
+### Tier 1 — Universal invariants (automated)
+
+`tests/maxscript/verify/validate_alo.py` runs on every exported `.alo`, asserting structural rules every file must satisfy: Root sentinel, topologically-sorted bone parents, billboard mode in `[0, 7]`, mesh index/vertex consistency, unit-length normals/tangents, weights summing to 1.0, connection counts. Fails the test with a list of every violation it found, not just the first one.
+
+### Tier 2 — Writer round-trip (automated)
+
+Each exported `.alo` is fed through `build\tools\alo_roundtrip\Release\alo_roundtrip.exe`. Non-zero exit means the writer's re-serialisation diverges from the original bytes — i.e. a regression in the format-library writer. Catches drift for free without per-test boilerplate.
+
+### Tier 3 — Feature-specific verifiers (automated)
+
+Each `tests/maxscript/test_*.ms` ships with a paired `verify_test_*.py` that asserts the behaviour the test was written to pin. When you add a feature, add its Tier 3 verifier.
+
+```powershell
+# Tiers 1-3 in one shot:
+powershell -File scripts/run-max-tests.ps1
+```
+
+### Tier 4 — Manual smoke tests (release / major-PR sign-off)
+
+Things batch mode can't verify. Run these for releases or whenever a PR's behaviour can't be inferred from on-disk structure alone:
+
+- [ ] **Mike Lankamp's `alamo2max` MAXScript importer.** Open the exported `.alo` in his importer (any supported Max version). No errors in the MAXScript listener; scene reconstructs with the expected mesh / bone / material set.
+- [ ] **AloViewer.** Drag the exported `.alo` onto AloViewer. Renders without crash; geometry has expected shape and orientation; materials visible (textured surfaces show texture, not solid colour).
+- [ ] **In-game (EaW / FoC).** Drop the `.alo` into a mod folder and load the relevant unit. Loads without crash; renders correctly; for animation work, animations play; hardpoints fire from expected positions.
