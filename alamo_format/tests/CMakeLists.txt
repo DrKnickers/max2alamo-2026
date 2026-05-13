@@ -13,6 +13,7 @@ add_executable(alamo_format_tests
     chunk_tree_test.cpp
     export_scene_test.cpp
     alo_build_test.cpp
+    ala_build_test.cpp
     skin_weights_test.cpp
 )
 target_link_libraries(alamo_format_tests PRIVATE alamo_format Catch2::Catch2WithMain)
