@@ -44,6 +44,7 @@ Single-file project status + history. Open this first when picking up a new sess
 | 8a | Format library: typed `.ala` read/write pipeline (`AlaAnimation` struct + `build_ala` + `read_ala` + `ala_typed_roundtrip` CLI + 21 Catch2 tests) | ✅ shipped | **2863/2863 vanilla `.ala` byte-identical** via typed pipeline (1500/1500 FoC + 1363/1363 EaW — exceeded plan's parse-clean bar for EaW). Design key: typed fields + raw payload preservation per leaf, so read-then-write is identity by construction. 3× full-corpus determinism; `alo_dump` output identical across runs; 81/81 unit tests; non-regression on `alo_roundtrip` (4929/4929) and `.alo` corpus sweep (2066/2066); three negative tripwires fire on the expected assertion. |
 | 8b | Walker rotation pass: `walk_animation()` samples `IGameNode::GetLocalTM(t)` per frame for every bone in `bone_map`; packs int16 XYZW with sign canonicalisation; exporter writes `.ala` next to `.alo` when at least one bone has a rotation track | ✅ shipped | `test_rotation_keyframes` (single bone keyframed 0°→90° about Z over 31 frames) round-trips through Tier 1 (`.alo` strict), Tier 2 (chunk-tree), Tier 2-ala (typed pipeline), Tier 3 (17-assertion verifier). Frame[0]=(0,0,0,1), frame[30]=(0,0,0.7071,0.7071) within 1e-3. 25/25 harness (existing 24 still produce only `.alo`; no spurious `.ala`); 3× byte-identical determinism (`.alo` `3791F274…`, `.ala` `2B60515B…`); existing test_phase7_acceptance still SHA `56FCEAF0…` post-rebuild. Non-regression: 4929/4929 chunk-tree · 2066/2066 .alo sweep · 2863/2863 .ala typed-pipeline · 81/81 unit. Three negative tripwires fire on the expected assertion. |
 | 8c | Walker translation tracks: extends `walk_animation()` to scan per-frame `Matrix3::GetRow(3)` for every animatable bone, compute per-bone `trans_offset` (min) / `trans_scale` (max-min)/65535, pack `uint16[3]` into `0x100a`. Single `GetLocalTM` per (bone,frame) shared with rotation extraction. Scale tracks confirmed absent from FoC vanilla (0/1500); 8c emits `n_scale_words=0` and leaves `idx_scale=-1`. | ✅ shipped | `test_translation_keyframes` (2-bone scene: TransBone keyframed [0,0,0]→[10,20,5], RotBone constant position + 0°→90° Z rotation). 25-assertion verifier covers structural, slot assignment, rotation, and translation groups; all pass. Frame[0] position ≈ (0,0,0), frame[30] ≈ (10,20,5) within 1e-3. RotBone has degenerate `trans_scale=(0,0,0)` (constant position) — exercises the divide-by-zero guard. 26/26 harness; 3× byte-identical determinism (`.alo` `A0C333A2…`, `.ala` `749EBCE8…`); Phase 7d test still SHA `56FCEAF0…` post-rebuild. Non-regression: 4929/4929 · 2066/2066 · 2863/2863 · 81/81. Three negative tripwires fire (dropped keyframe → constant pos; swapped scale axes → per-axis values wrong; off-by-3 word count → pool-size mismatch). |
+| 5g | Pivot-orientation fix (closes [#53](https://github.com/DrKnickers/max2alamo-2026/issues/53)): walker now composes `objectoffsetrot` / `objectoffsetpos` from `INode::GetObjOffset*()` into every on-disk bone matrix and every per-frame animation sample (7 callsites). New `compose_with_object_offset(INode*, Matrix3)` helper does `offset_TM * node_TM` (row-vector composition; offset applied first). Captures the "Affect Pivot Only" hardpoint authoring workflow for Dummy/Point helpers. | ✅ shipped | `test_pivot_node_rotation`, `test_pivot_affect_only`, `test_pivot_skinned_safety` — three new harness tests promoted from one-shot probes. DummyPivoted col1 ≈ (-1,0,0) within 1e-3 (the bug, now captured). 29/29 harness; gold SHAs preserved on Phase 7d (`56FCEAF0…`), 8b (`3791F274…`), 8c (`A0C333A2…`) post-rebuild — fix is a true no-op for scenes without object offsets. Non-regression: 4929/4929 · 2066/2066 · 2863/2863 · 81/81. Caveat: BoneSys bones double-apply objectoffsetrot via Max-internal logic; users should rotate BoneSys bones via `node.rotation` or the interactive Rotate tool. BoneSys `createBone <from> <to>` direction args are NOT recoverable (data is in bone-object internals; no Max-SDK accessor). |
 | Utility UI | Faithful clone of the legacy PG Alamo Utility panel | ✅ shipped | Three rollouts (Node Export Options / Quick Selection / Animation Settings) appear under Utilities > More... > Alamo Utility; checkboxes/radios round-trip Alamo_* user properties on the selected node |
 | 6a | Effects11 shader stubs for Max 2026 | ✅ shipped | [PR #18](https://github.com/DrKnickers/max2alamo-2026/pull/18) — all 39 PG shaders load in Max 2026's DXSM with PG parameter UIs |
 | 6b | Per-vertex tangent + binormal export | ✅ shipped | [PR #19](https://github.com/DrKnickers/max2alamo-2026/pull/19) — MikkT via `IGameMesh::GetFaceVertexTangentBinormal`; bump shading works |
@@ -307,7 +308,7 @@ scripts/
 
 `powershell -File scripts/run-max-tests.ps1` discovers every `tests/maxscript/test_*.ms`, runs each through 3dsmaxbatch when its cached output is stale (or the installed `.dle` is newer), dispatches the paired Python verifier, and reports pass/fail. Timestamp-based caching saves the ~25-second Max boot per test on no-op runs.
 
-Current coverage (26 tests, all green):
+Current coverage (29 tests, all green):
 
 | Test | Pins behaviour from |
 |---|---|
@@ -337,6 +338,9 @@ Current coverage (26 tests, all green):
 | `test_phase7_acceptance` | Phase 7d — multi-feature acceptance: skinned cylinder + 2-bone chain + helper-as-bone + static box + Omni + TargetSpot + 2 proxies in one scene; **31 interaction-shaped assertions** across 8 groups (skeleton composition, mutex enforcement, mesh wiring, lights, proxies, connection accounting, bone-matrix orthonormality, `.export.log` cross-check) |
 | `test_rotation_keyframes` | Phase 8b — single bone keyframed 0°→90° about Z over 31 frames; emits sibling `.ala` with FoC framing + `0x1009` rotation pool. **17-assertion verifier** covers chunk structure, FoC mini-chunks, pool size, idx_rotation per bone, frame[0] ≈ identity / frame[30] ≈ 90°-Z within 1e-3, unit-length quats, sign-canonicalisation continuity. **Updated for Phase 8c** to expect a translation pool on the animatable bone (constant position → degenerate `trans_scale=(0,0,0)`). |
 | `test_translation_keyframes` | Phase 8c — 2-bone scene: TransBone keyframed [0,0,0]→[10,20,5], RotBone with constant position + 0°→90° Z rotation. Emits sibling `.ala` with both `0x100a` (372 B) and `0x1009` (496 B) pools. **25-assertion verifier** across 4 groups (structural, slot assignment, rotation, translation); covers per-bone offset/scale round-trip, frame[0] / frame[30] decoded positions within 1e-3, constant-axis degenerate-scale handling, sign-canonicalisation continuity |
+| `test_pivot_node_rotation` | Phase 5g sanity guardrail — BoneSys + Dummy each rotated via `node.rotation = eulerAngles 0 0 -90`. Verifier asserts both bone matrices have col1 ≈ (-1, 0, 0) within 1e-3 (rotation captured via the node-TM path, which has always worked). Catches any regression in the new compose helper that would break node-level rotation |
+| `test_pivot_affect_only` | Phase 5g regression test (issue [#53](https://github.com/DrKnickers/max2alamo-2026/issues/53)) — Dummy with `objectoffsetrot = quat -90°-about-Z`, the canonical hardpoint authoring pattern. Asserts col1 ≈ (-1, 0, 0) within 1e-3. **Fails before Phase 5g; passes after** |
+| `test_pivot_skinned_safety` | Phase 5g skinning regression guard — 2-bone chain (B0 with `objectoffsetrot`, B1 identity) + cylinder skinned with rigid per-row binding. Asserts B0 carries the offset (non-identity col1), B1 stays identity, all 144 vertex weight sums = 1.0 within 1e-3, every bone reference resolves. Guards against the speculative regression where applying the fix to skinning bones would distort vertex deformation |
 
 The harness is **not CI-runnable** (needs Max install + license seat). It's an on-demand local tool; CI keeps the format-library tests.
 
@@ -447,6 +451,46 @@ Format research into the four `Alamo_*` props the Utility panel writes that Phas
 Verified along the way: our writer always emits `0x206` bone chunks (Phase 4c convention; vanilla has 44653 × 0x206 vs 18 × 0x205, so we match the dominant pattern). 0x205 is just 0x206 minus the billboard_mode u32; both layouts share the 12-float matrix. No behaviour change needed.
 
 **Conclusion:** Three of the four props have nothing for the walker to do today. The fourth is a proxy-chunk field that belongs with the proxy work in Phase 7. Closing out the Phase 5 series here.
+
+### Phase 5g — Pivot-orientation fix (shipped, closes [#53](https://github.com/DrKnickers/max2alamo-2026/issues/53))
+
+Walker was writing bone matrices via `IGameNode::GetLocalTM()` / `GetWorldTM()`, neither of which include the object-offset transform (Max's `objectoffsetrot` / `objectoffsetpos` / `objectoffsetscale`). When a user authored a hardpoint direction via **Hierarchy → Affect Pivot Only**, the rotation was silently dropped — the on-disk `0x206` bone matrix came out identity regardless of authored direction. The engine reads the bone matrix's "forward" axis for firing-cone projection; without the fix, weapons fired along world +Y regardless of authored pivot direction.
+
+The fix: a new helper `compose_with_object_offset(INode*, Matrix3) → Matrix3` that composes the node TM with the object offset via `INode::GetObjOffsetPos/Rot()`. Composition order is `offset_TM * node_TM` (row-vector convention: offset applied first to convert pivot-space to node-space, then node TM to convert to parent-space). Applied at **seven callsites** in `max2alamo/src/scene_walker.cpp`:
+
+| Site | Phase | What |
+|---|---|---|
+| `walk_bones` (line 603) | 5a / 5e | Real bones + helpers-as-bones |
+| `walk_lights` (line 734) | 7b | Synthetic per-light bone |
+| `walk_lights` (line 754) | 7b.2 | Spotlight `.Target` sibling bone |
+| `walk_proxies` (line 835) | 7c.2 | Synthetic per-proxy bone |
+| `walk_node` (line 895) | 4c | Static-mesh attachment bone |
+| `walk_animation` (line 1230) | 8b | Per-bone `default_rotation` sample |
+| `walk_animation` (line 1267) | 8b / 8c | Per-frame rotation + translation extraction |
+
+For identity object offset (the case for every existing harness test and every vanilla corpus file) the composition is a no-op: `offset_TM * node_TM == node_TM` byte-identical. This was verified empirically by re-exporting the three gold-reference tests through the new plugin and confirming the SHAs match pre-fix exactly:
+
+- `test_phase7_acceptance` → SHA `56FCEAF02E3D043E…` (matches Phase 7d baseline)
+- `test_rotation_keyframes` → SHA `3791F274…` (matches Phase 8b baseline)
+- `test_translation_keyframes` → SHA `A0C333A2…` (matches Phase 8c baseline)
+
+**`scale` is intentionally not composed.** Non-unit object-offset scale is exotic; none of the corpus or tests exercise it; the runtime semantics of a scaled bone matrix would require additional thought.
+
+**Two caveats documented for users:**
+
+1. **BoneSys bones double-apply `objectoffsetrot`.** Setting `b.objectoffsetrot = quat -90°-Z` on a `BoneSys.createBone` produces a bone matrix carrying 180° of rotation, not 90° — Max's BoneSys class interacts with the object offset via internal logic that composes twice. The workaround is to rotate BoneSys bones via `b.rotation = …` (node-level) or the interactive Rotate tool in Normal mode, NOT Affect Pivot Only. Dummy/Point helpers — the canonical hardpoint authoring pattern — work correctly and round-trip the authored offset.
+
+2. **`BoneSys.createBone <from> <to>` direction args are NOT recoverable.** The bone's procedural-display direction lives in bone-object internal data; there's no Max SDK accessor for it. Users authoring bones in MaxScript should set rotation explicitly (`b.rotation = …`) instead of relying on createBone's direction args alone. Interactive bone-drawing in the viewport produces a node TM with rotation built-in, so this caveat only affects programmatic bone creation.
+
+Three new harness tests added, with the existing 26 unchanged:
+
+- `test_pivot_node_rotation` (5g sanity guardrail) — confirms `b.rotation` / `d.rotation` continues to round-trip.
+- `test_pivot_affect_only` (5g regression test) — Dummy with `objectoffsetrot = quat -90°-Z`; verifier asserts col1 ≈ (-1, 0, 0) within 1e-3. **Fails before the fix; passes after.**
+- `test_pivot_skinned_safety` (5g skinning guard) — 2-bone chain (B0 with offset, B1 without) + cylinder skinned with rigid per-row binding. Verifier asserts B0 captures the offset, B1 stays identity, weight-sum = 1.0 per vertex. Catches any regression where applying the fix to skinning bones would distort vertex deformation.
+
+Pinned signals at merge:
+- 29/29 harness · 81/81 unit · 4929/4929 chunk-tree · 2066/2066 .alo strict · 2863/2863 .ala typed-pipeline — all unchanged.
+- 3 negative tripwires fire: dropping the compose-helper call at site 603 → affect_only fails (but node_rotation still passes); forcing identity offset in the helper → affect_only fails; reversing composition order → didn't bite for this test data (node TM was identity, so order is invisible — documented as a known limitation of the tripwire).
 
 ### Phase 7 — Lights + proxies (shipped)
 
