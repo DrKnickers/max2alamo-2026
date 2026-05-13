@@ -349,6 +349,18 @@ def validate(alo: "Alo", strict: bool = False) -> List[str]:
                 errors.append(f"{tag}: spotlight cone exceeds 180deg "
                               f"(hotspot={l.hotspot}, falloff={l.falloff})")
 
+    # ---- Proxy invariants (Phase 7c.2) --------------------------------
+    # Universal: name non-empty, no embedded nulls, bone_index in
+    # range. Vanilla holds across the entire corpus.
+    for pi, p in enumerate(alo.proxies):
+        if not p.name:
+            errors.append(f"proxy[{pi}]: empty name")
+        if "\x00" in p.name:
+            errors.append(f"proxy[{pi}]: name {p.name!r} has embedded null")
+        if alo.bones and p.bone_index >= len(alo.bones):
+            errors.append(f"proxy[{pi}] ({p.name!r}): bone_index "
+                          f"{p.bone_index} >= bone count {len(alo.bones)}")
+
     # ---- Connection invariants ----------------------------------------
     # 0x602 connections cover meshes + lights, in (meshes ++ lights)
     # order, per Mike Lankamp's reader (alamo2max.ms:689). Phase 7a

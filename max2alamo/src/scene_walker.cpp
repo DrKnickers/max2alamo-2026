@@ -17,6 +17,8 @@
 #include "alamo_format/shader_table.h"
 #include "alamo_format/skin_weights.h"
 
+#include "alamo_proxy_helper.h"  // for kAlamoProxyClassID
+
 #include <algorithm>
 #include <limits>
 #include <optional>
@@ -525,16 +527,20 @@ std::array<float, 12> encode_matrix3(const Matrix3& m3)
     };
 }
 
+// Forward decl -- defined in the Phase 7c.2 proxy-walker block below.
+// Needed here so is_exportable_bone can mutex Alamo_Proxy helpers
+// out of the bone-export path.
+bool is_alamo_proxy_node(IGameNode* gnode);
+
 // Is this IGameNode an "exportable bone"? Two categories accepted:
 //   - IGAME_BONE      (Phase 5a): regular Max bones. Auto-exported;
 //                     no user-prop opt-in required, to preserve the
 //                     "every bone in the scene becomes a bone in the
 //                     .alo" contract the test corpus relies on.
 //   - IGAME_HELPER    (Phase 5e): Point / Dummy / Arrow helpers
-//                     tagged with `Alamo_Export_Transform=true`.
-//                     Opt-in because most scenes have helpers that
-//                     aren't meant to be exported (lookat targets,
-//                     authoring rigs, reference geometry, etc.).
+//                     tagged with `Alamo_Export_Transform=true`,
+//                     EXCLUDING Alamo_Proxy helpers (those are
+//                     proxies, mutex via 7c.2).
 // Future:
 //   - IGAME_BIPED subtypes are wired up implicitly via IGAME_BONE
 //     (Biped bones report as bones to IGame).
@@ -548,6 +554,12 @@ bool is_exportable_bone(IGameNode* node)
 
     if (type == IGameObject::IGAME_BONE) return true;
     if (type == IGameObject::IGAME_HELPER) {
+        // Phase 7c.2 mutex: Alamo_Proxy helpers are proxies, never
+        // bones. Even if the user (unusually) checked
+        // Alamo_Export_Transform on a proxy node, the proxy walker
+        // has already claimed it. Skip here so the helper-as-bone
+        // path (Phase 5e) doesn't double-emit.
+        if (is_alamo_proxy_node(node)) return false;
         return read_node_user_prop_bool(node->GetMaxNode(),
                                         kPropExportTransform, false);
     }
@@ -755,6 +767,74 @@ void walk_lights(IGameScene* igame, alamo_format::ExportScene& scene)
 //     in. The mesh connects to that bone; every vertex's slot-0 bone
 //     index references it.
 //
+// Phase 7c.2: proxy walker. Iterates IGAME_HELPER nodes; any whose
+// underlying object's Class_ID matches kAlamoProxyClassID becomes
+// an ExportProxy. The Max-side node name is the proxy's reference
+// name (e.g. "p_engine_glow"). Optional flags come from user props
+// the Utility panel writes:
+//   - Alamo_Geometry_Hidden          -> mini-chunk 7
+//   - Alamo_Alt_Decrease_Stay_Hidden -> mini-chunk 8
+// Both default false (then suppressed in the writer per vanilla
+// omission semantics).
+//
+// Detection by Class_ID is explicit and unambiguous -- no name
+// prefix matching. A plain Dummy helper named "p_smoke" does NOT
+// export as a proxy; only Alamo_Proxy instances do. Matches the
+// legacy Petroglyph plugin's design.
+bool is_alamo_proxy_node(IGameNode* gnode)
+{
+    if (!gnode) return false;
+    INode* inode = gnode->GetMaxNode();
+    if (!inode) return false;
+    Object* obj = inode->GetObjectRef();
+    if (!obj) return false;
+    return obj->ClassID() == kAlamoProxyClassID;
+}
+
+void walk_proxies(IGameScene* igame, alamo_format::ExportScene& scene)
+{
+    if (!igame) return;
+    Tab<IGameNode*> helpers =
+        igame->GetIGameNodeByType(IGameObject::IGAME_HELPER);
+
+    for (int i = 0; i < helpers.Count(); ++i) {
+        IGameNode* gnode = helpers[i];
+        if (!is_alamo_proxy_node(gnode)) continue;
+
+        INode* inode = gnode->GetMaxNode();
+        alamo_format::ExportProxy proxy;
+        proxy.name = to_utf8(gnode->GetName());
+
+        // Optional flags from Alamo_* user props the Utility panel
+        // writes. Hidden falls back to Max-native IsNodeHidden() when
+        // the explicit prop is absent (mirrors Phase 5d mesh logic
+        // and the per-node visibility convention).
+        if (has_node_user_prop(inode, kPropGeometryHidden)) {
+            proxy.is_hidden = read_node_user_prop_bool(inode, kPropGeometryHidden, false);
+        } else {
+            proxy.is_hidden = gnode->IsNodeHidden() != FALSE;
+        }
+        proxy.alt_decrease_stay_hidden = read_node_user_prop_bool(
+            inode, _T("Alamo_Alt_Decrease_Stay_Hidden"), false);
+
+        // Synthetic per-proxy bone (Phase 4c per-mesh-bone pattern;
+        // matches Phase 7b's per-light bone). Parented to Root with
+        // the proxy's world TM baked in. Bone name matches the
+        // proxy so Mike's importer reconstructs Alamo_Proxy helpers
+        // with the right names.
+        alamo_format::ExportBone synth_bone;
+        synth_bone.name           = proxy.name;
+        synth_bone.parent_index   = 0;
+        synth_bone.visible        = gnode->IsNodeHidden() == FALSE;
+        synth_bone.billboard_mode = 0;
+        synth_bone.matrix = encode_matrix3(gnode->GetWorldTM().ExtractMatrix3());
+
+        proxy.bone_index = static_cast<std::uint32_t>(scene.bones.size());
+        scene.bones.push_back(std::move(synth_bone));
+        scene.proxies.push_back(std::move(proxy));
+    }
+}
+
 //   - Skinned (Phase 5b/5c): no per-mesh bone. The mesh connects to
 //     Root (matching vanilla -- see AI_DACTILLION.ALO's "object#0 ->
 //     bone#0 (Root)" pattern); each vertex's top 4 influences (by
@@ -1042,10 +1122,15 @@ bool walk_scene(Interface*                  /*max_interface*/,
         walk_node(igame->GetTopLevelNode(i), out, bone_map);
     }
 
-    // Pass 3 (Phase 7b.1): lights. Omni + Directional only -- spotlights
-    // (which need an associated .Target bone for orientation, per the
-    // vanilla EB_ICC_LANDINGPAD pattern) land in 7b.2.
+    // Pass 3 (Phase 7b.1/2): lights, including spotlights with their
+    // .Target sibling bones.
     walk_lights(igame, out);
+
+    // Pass 4 (Phase 7c.2): Alamo_Proxy helpers (particle/effect
+    // attachment points). Class_ID-based detection -- not name
+    // prefix; users explicitly place these via Create > Helpers >
+    // Standard > Alamo Proxy.
+    walk_proxies(igame, out);
 
     igame->ReleaseIGame();
     return true;
@@ -1099,6 +1184,18 @@ void log_scene_summary(const alamo_format::ExportScene& scene, std::string& out_
        << "meshes:      " << scene.meshes.size()  << "\n"
        << "lights:      " << scene.lights.size()  << "\n"
        << "proxies:     " << scene.proxies.size() << "\n";
+
+    if (!scene.proxies.empty()) {
+        os << "\nProxies:\n";
+        for (std::size_t i = 0; i < scene.proxies.size(); ++i) {
+            const auto& p = scene.proxies[i];
+            os << "  [" << i << "] \"" << p.name << "\""
+               << "  bone=" << p.bone_index
+               << "  hidden=" << (p.is_hidden ? "true" : "false")
+               << "  altDecStayHidden=" << (p.alt_decrease_stay_hidden ? "true" : "false")
+               << "\n";
+        }
+    }
 
     if (!scene.lights.empty()) {
         os << "\nLights:\n";
