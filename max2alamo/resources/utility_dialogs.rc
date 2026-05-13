@@ -90,7 +90,7 @@ END
 
 // ---- Animation Settings ---------------------------------------------------
 
-IDD_ALAMO_ANIMATION_SETTINGS DIALOGEX 0, 0, 108, 100
+IDD_ALAMO_ANIMATION_SETTINGS DIALOGEX 0, 0, 108, 114
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_VISIBLE
 FONT 8, "Ms Shell Dlg", 400, 0, 0x1
 BEGIN
