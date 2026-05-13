@@ -37,7 +37,8 @@ Single-file project status + history. Open this first when picking up a new sess
 | 5f | `Alamo_*` user-property family — remaining props research | ✅ shipped (research-only) | Format research resolved: 3 of 4 props have **zero binary representation** in `.alo`; the 4th (`Alt_Decrease_Stay_Hidden`) is a proxy-chunk field deferred to Phase 7. No walker work needed today. |
 | 7a | Format library: `ExportLight` / `ExportProxy` structs + builders | ✅ shipped | `0x1300`/`0x1301`/`0x1302` light chunks + `0x603` proxy chunks emit through `build_alo`; connection-counts in `0x601` reflect `(meshes + lights)` and proxy counts; 9 new unit tests pass; mixed scene round-trips byte-identical. |
 | 7b.1 | Walker: `IGAME_LIGHT` Omni + Directional + harness tests | ✅ shipped | `walk_lights` via `igame->GetIGameNodeByType(IGAME_LIGHT)` emits per-light synth bones + ExportLight; 6 new harness tests (basic, primaries, atten on/off, directional, mesh+light mix, hidden); `.export.log` Lights summary; Tier 1 validator extended; corpus still 2066/2066. |
-| 7b.2 | Walker: Spotlight + `.Target` sibling bone | ⏭ next | TargetSpot / FreeSpot emit with target bone for orientation. |
+| 7b.2 | Walker: Spotlight + `.Target` sibling bone | ✅ shipped | TSpot / FSpot emit as Spotlight (type=2); TargetSpot also emits a sibling `<name>.Target` bone at `INode::GetTarget()`'s world TM (matches vanilla EB_ICC_LANDINGPAD pattern). Empirically confirmed: IGameProperty returns Max-UI **degrees** for cone angles, walker converts to radians for disk format. |
+| 7c | Walker: `p_*` helpers → ExportProxy + harness tests | ⏭ next | Particle/effect proxy emission, picking up `Alt_Decrease_Stay_Hidden` from the Utility panel. |
 | Utility UI | Faithful clone of the legacy PG Alamo Utility panel | ✅ shipped | Three rollouts (Node Export Options / Quick Selection / Animation Settings) appear under Utilities > More... > Alamo Utility; checkboxes/radios round-trip Alamo_* user properties on the selected node |
 | 6a | Effects11 shader stubs for Max 2026 | ✅ shipped | [PR #18](https://github.com/DrKnickers/max2alamo-2026/pull/18) — all 39 PG shaders load in Max 2026's DXSM with PG parameter UIs |
 | 6b | Per-vertex tangent + binormal export | ✅ shipped | [PR #19](https://github.com/DrKnickers/max2alamo-2026/pull/19) — MikkT via `IGameMesh::GetFaceVertexTangentBinormal`; bump shading works |
@@ -321,6 +322,8 @@ Current coverage (6 tests, all green):
 | `test_directional_light` | Phase 7b.1 — DirectionalLight → type=1 |
 | `test_mesh_and_omni_mixed` | Phase 7b.1 ordering — light authored first in Max; walker still emits mesh-then-light in connections |
 | `test_omni_hidden_in_max` | Phase 7b.1 visibility — hidden Max light still exports; bone has `visible=False` |
+| `test_spotlight_with_target` | Phase 7b.2 baseline — TargetSpot + `.Target` sibling bone; cone radian conversion; target world TM read at export time |
+| `test_freespot_no_target` | Phase 7b.2 — FreeSpot exports as type=2 without a `.Target` sibling bone |
 
 The harness is **not CI-runnable** (needs Max install + license seat). It's an on-demand local tool; CI keeps the format-library tests.
 
