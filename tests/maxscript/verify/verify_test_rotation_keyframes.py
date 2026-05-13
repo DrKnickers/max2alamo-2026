@@ -166,9 +166,12 @@ def main(alo_path):
     if n_rotation_words != 4:
         errors.append(f"#6 n_rotation_words = {n_rotation_words}, expected 4")
 
-    # #7 n_translation_words == 0 (8b out-of-scope).
-    if n_translation_words not in (-1, 0):
-        errors.append(f"#7 n_translation_words = {n_translation_words}, expected 0")
+    # #7 n_translation_words == 3 (Phase 8c forward-compat: every animatable
+    # bone gets a translation track regardless of whether position animates;
+    # TestBone has constant position so its translation pool values are all
+    # zero, but the slot is still emitted).
+    if n_translation_words != 3:
+        errors.append(f"#7 n_translation_words = {n_translation_words}, expected 3")
 
     # #8 0x1009 size == n_frames * n_rotation_words * 2.
     if rot_pool_payload is None:
@@ -181,9 +184,16 @@ def main(alo_path):
                           f"expected {expected_pool_bytes} "
                           f"(n_frames {n_frames} * n_rot_words {n_rotation_words} * 2)")
 
-    # #9 0x100a NOT present (8b out-of-scope).
-    if trans_pool_payload is not None:
-        errors.append("#9 0x100a (translation pool) present; expected absent for 8b")
+    # #9 0x100a present (Phase 8c: emitted for the single animatable bone
+    # with constant position; pool values are all zero but the chunk exists).
+    if trans_pool_payload is None:
+        errors.append("#9 0x100a (translation pool) missing; expected present after 8c")
+    else:
+        expected_trans_bytes = (max(n_frames, 0) *
+                                max(n_translation_words, 0) * 2)
+        if len(trans_pool_payload) != expected_trans_bytes:
+            errors.append(f"#9 0x100a size = {len(trans_pool_payload)}, "
+                          f"expected {expected_trans_bytes}")
 
     # Parse per-bone 0x1003 mini-chunks to get name + idx_rotation.
     bones_info = []  # list of dicts: {name, idx_rotation, idx_translation, idx_scale, default_rotation}
@@ -220,14 +230,20 @@ def main(alo_path):
     if test_bone is None:
         errors.append(f"#10 'TestBone' not found in {bone_names}")
 
-    # #11 TestBone.idx_rotation == 0.
+    # #11 TestBone.idx_rotation == 0 (and idx_translation == 0 post-8c).
     if test_bone is not None and test_bone["idx_rotation"] != 0:
         errors.append(f"#11 TestBone.idx_rotation = {test_bone['idx_rotation']}, expected 0")
+    if test_bone is not None and test_bone["idx_translation"] != 0:
+        errors.append(f"#11 TestBone.idx_translation = {test_bone['idx_translation']}, "
+                      f"expected 0 (Phase 8c emits translation tracks for animatable bones)")
 
-    # #12 Other bones have idx_rotation == -1.
+    # #12 Other bones have idx_rotation == -1 (and idx_translation == -1).
     for b in bones_info:
         if b["name"] != "TestBone" and b["idx_rotation"] != -1:
             errors.append(f"#12 bone {b['name']!r} idx_rotation = {b['idx_rotation']}, "
+                          f"expected -1")
+        if b["name"] != "TestBone" and b["idx_translation"] != -1:
+            errors.append(f"#12 bone {b['name']!r} idx_translation = {b['idx_translation']}, "
                           f"expected -1")
 
     # Unpack quats from the pool for frame 0 and frame 30 at TestBone slot 0.

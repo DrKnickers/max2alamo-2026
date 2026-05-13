@@ -166,7 +166,9 @@ int AloExport::DoExport(const TCHAR*  name,
     {
         bool has_anim_track = false;
         for (const auto& b : anim.bones) {
-            if (b.idx_rotation >= 0) { has_anim_track = true; break; }
+            if (b.idx_rotation >= 0 || b.idx_translation >= 0) {
+                has_anim_track = true; break;
+            }
         }
         if (has_anim_track) {
             try {
@@ -202,13 +204,14 @@ int AloExport::DoExport(const TCHAR*  name,
         log_material_diagnostics(i, log);
         log_scene_summary(scene, log);
         if (wrote_ala) {
-            char anim_line[160];
+            char anim_line[200];
             std::snprintf(anim_line, sizeof(anim_line),
                 "\nAnimation: %u frames @ %.2f fps, %zu bone(s), "
-                "%u rotation word(s); .ala = %zu bytes\n",
+                "%u rotation word(s), %u translation word(s); "
+                ".ala = %zu bytes\n",
                 anim.n_frames, static_cast<double>(anim.fps),
                 anim.bones.size(), anim.n_rotation_words,
-                ala_bytes_written);
+                anim.n_translation_words, ala_bytes_written);
             log += anim_line;
         }
         std::wstring log_path = std::wstring(name) + L".export.log";
