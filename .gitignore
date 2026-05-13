@@ -16,6 +16,11 @@ x86/
 # Files elevation on every rebuild). See docs/build.md.
 plugin/
 
+# Local-only session resume notes -- Claude writes these at the end
+# of a session so the next session can pick up the thread. Not part
+# of the canonical project record (that lives in docs/development-log.md).
+SESSION_NOTES.md
+
 # CMake
 CMakeCache.txt
 CMakeFiles/
