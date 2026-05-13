@@ -611,7 +611,7 @@ void walk_bones(IGameNode* node, std::uint32_t parent_bone_idx,
 // bone to encode their orientation; that lands in 7b.2.
 
 // IGameLight::LightType -> ExportLight::Type mapping. Returns
-// std::nullopt for types we don't export yet.
+// std::nullopt for types we don't export.
 std::optional<alamo_format::ExportLight::Type>
 classify_light(IGameLight::LightType t)
 {
@@ -623,10 +623,7 @@ classify_light(IGameLight::LightType t)
         return alamo_format::ExportLight::Type::Directional;
     case IGameLight::IGAME_TSPOT:
     case IGameLight::IGAME_FSPOT:
-        // Spotlights deferred to Phase 7b.2 -- they need .Target bone
-        // emission to encode orientation, which the current walker
-        // doesn't yet do.
-        return std::nullopt;
+        return alamo_format::ExportLight::Type::Spotlight;
     default:
         return std::nullopt;
     }
@@ -686,10 +683,27 @@ void walk_lights(IGameScene* igame, alamo_format::ExportScene& scene)
         light.intensity   = read_light_float(gl->GetLightMultiplier(), 1.f);
         light.atten_end   = read_light_float(gl->GetLightAttenEnd(),   0.f);
         light.atten_start = read_light_float(gl->GetLightAttenStart(), 0.f);
-        // hotspot/falloff stay 0 for Omni / Directional. They
-        // become meaningful in 7b.2 for spotlights.
-        light.hotspot = 0.f;
-        light.falloff = 0.f;
+        if (light.type == alamo_format::ExportLight::Type::Spotlight) {
+            // Phase 7b.2: spotlight cone. EMPIRICALLY: IGameProperty
+            // returns light angles in DEGREES (not radians, despite
+            // Max storing them as radians in the param block --
+            // IGameProperty's float overload applies the same units
+            // the MAXScript UI presents). Vanilla .alo content stores
+            // RADIANS (e.g. EB_ICC_LANDINGPAD.ALO has falloff=0.7854
+            // for what an artist would call a 45deg cone). So we
+            // convert degrees -> radians at write time.
+            //
+            // Validated by exporting hotspot=30, falloff=45 from
+            // MAXScript and confirming the .alo holds 0.5236 / 0.7854.
+            const float hs_deg = read_light_float(gl->GetLightHotSpot(), 0.f);
+            const float fo_deg = read_light_float(gl->GetLightFallOff(), 0.f);
+            const float kDegToRad = 3.14159265358979323846f / 180.f;
+            light.hotspot = hs_deg * kDegToRad;
+            light.falloff = fo_deg * kDegToRad;
+        } else {
+            light.hotspot = 0.f;
+            light.falloff = 0.f;
+        }
 
         // Synthetic per-light bone (Phase 4c pattern). Name matches
         // the light so Mike's importer reconstructs them as paired
@@ -704,6 +718,28 @@ void walk_lights(IGameScene* igame, alamo_format::ExportScene& scene)
 
         light.bone_index = static_cast<std::uint32_t>(scene.bones.size());
         scene.bones.push_back(std::move(synth_bone));
+
+        // Phase 7b.2: if the light has a Max-side target node
+        // (TargetSpot has one; FreeSpot does not), emit a sibling
+        // bone at the target's world position so the engine /
+        // Mike's importer can reconstruct orientation from the
+        // <light, target> pair. Naming convention <name>.Target
+        // matches vanilla EB_ICC_LANDINGPAD.ALO.
+        if (INode* light_inode = node->GetMaxNode()) {
+            if (INode* target_inode = light_inode->GetTarget()) {
+                alamo_format::ExportBone tgt_bone;
+                tgt_bone.name           = light.name + ".Target";
+                tgt_bone.parent_index   = 0;
+                tgt_bone.visible        = target_inode->IsNodeHidden() == FALSE;
+                tgt_bone.billboard_mode = 0;
+                // Target's world TM at the current time. snapshot at
+                // frame 0 to match the rest of the export.
+                Matrix3 tm = target_inode->GetNodeTM(0);
+                tgt_bone.matrix = encode_matrix3(tm);
+                scene.bones.push_back(std::move(tgt_bone));
+            }
+        }
+
         scene.lights.push_back(std::move(light));
 
         node->ReleaseIGameObject();
