@@ -56,6 +56,13 @@
 #define IDC_QS_ALT_SPIN                 3214
 #define IDC_QS_ALT_HELP                 3215
 
+// ---- Alamo Proxy Modify-panel rollout controls ---------------------------
+
+#define IDD_ALAMO_PROXY_ROLLOUT         3400
+#define IDC_PROXY_DESC                  3401
+#define IDC_PROXY_HIDDEN                3402
+#define IDC_PROXY_ALT_DEC_STAY_HIDDEN   3403
+
 // ---- Animation Settings controls ------------------------------------------
 
 #define IDC_ANIM_NAME_COMBO             3300
