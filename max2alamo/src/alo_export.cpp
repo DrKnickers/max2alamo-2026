@@ -2,6 +2,7 @@
 
 #include "scene_walker.h"
 
+#include "alamo_format/ala_anim.h"
 #include "alamo_format/alo_build.h"
 #include "alamo_format/chunk_tree.h"
 #include "alamo_format/export_scene.h"
@@ -108,8 +109,9 @@ int AloExport::DoExport(const TCHAR*  name,
 
     // 1. Walk the scene.
     alamo_format::ExportScene scene;
+    alamo_format::AlaAnimation anim;
     std::string walker_err;
-    if (!walk_scene(i, scene, walker_err)) {
+    if (!walk_scene(i, scene, anim, walker_err)) {
         std::wstring wmsg(walker_err.begin(), walker_err.end());
         report((std::wstring(L"Scene walk failed:\n\n") + wmsg).c_str(), MB_ICONERROR);
         return IMPEXP_FAIL;
@@ -154,6 +156,43 @@ int AloExport::DoExport(const TCHAR*  name,
         return IMPEXP_FAIL;
     }
 
+    // 4.25 Phase 8b: write a sibling .ala when the scene has authored
+    // animation (Alamo_Anim_Start/End on the scene-root yielded at
+    // least one bone with a rotation track). Best-effort -- if the
+    // typed pipeline throws, log it and continue rather than failing
+    // the .alo export the user already paid for.
+    bool wrote_ala = false;
+    std::size_t ala_bytes_written = 0;
+    {
+        bool has_anim_track = false;
+        for (const auto& b : anim.bones) {
+            if (b.idx_rotation >= 0) { has_anim_track = true; break; }
+        }
+        if (has_anim_track) {
+            try {
+                auto ala_tree  = alamo_format::build_ala(anim);
+                auto ala_bytes = alamo_format::write_chunk_tree(ala_tree);
+                // Replace ".alo"/".ALO" suffix with ".ala". If `name`
+                // doesn't end in .alo (e.g. user typed a different
+                // extension), append ".ala" so we never overwrite the
+                // .alo we just wrote.
+                std::wstring ala_path = name;
+                if (ala_path.size() >= 4) {
+                    std::wstring tail = ala_path.substr(ala_path.size() - 4);
+                    for (auto& c : tail) c = static_cast<wchar_t>(towlower(c));
+                    if (tail == L".alo") ala_path.resize(ala_path.size() - 4);
+                }
+                ala_path += L".ala";
+                if (write_all(ala_path.c_str(), ala_bytes)) {
+                    wrote_ala = true;
+                    ala_bytes_written = ala_bytes.size();
+                }
+            } catch (const std::exception&) {
+                // swallowed; .ala emission is best-effort
+            }
+        }
+    }
+
     // 4.5 Drop a sibling .export.log explaining what we saw on the
     // material side, for debugging "why did THIS texture get exported"
     // questions. Best-effort -- failure to write the log doesn't fail
@@ -162,6 +201,16 @@ int AloExport::DoExport(const TCHAR*  name,
         std::string log;
         log_material_diagnostics(i, log);
         log_scene_summary(scene, log);
+        if (wrote_ala) {
+            char anim_line[160];
+            std::snprintf(anim_line, sizeof(anim_line),
+                "\nAnimation: %u frames @ %.2f fps, %zu bone(s), "
+                "%u rotation word(s); .ala = %zu bytes\n",
+                anim.n_frames, static_cast<double>(anim.fps),
+                anim.bones.size(), anim.n_rotation_words,
+                ala_bytes_written);
+            log += anim_line;
+        }
         std::wstring log_path = std::wstring(name) + L".export.log";
         std::ofstream lf(log_path, std::ios::binary | std::ios::trunc);
         if (lf) lf.write(log.data(), static_cast<std::streamsize>(log.size()));

@@ -159,6 +159,25 @@ foreach ($t in $tests) {
         Write-Warning "alo_roundtrip.exe not found; skipping Tier 2 (build the format library + tools to enable)"
     }
 
+    # Tier 2-ala (Phase 8b): if the exporter dropped a sibling .ala
+    # next to the .alo, typed-round-trip it to confirm byte-identity.
+    # This step runs only when the test scene actually authored
+    # animation (Alamo_Anim_Start/End user props -> at least one
+    # animated bone). Existing 24 static tests skip silently.
+    $alaPath = [System.IO.Path]::ChangeExtension($aloPath, ".ala")
+    if (Test-Path $alaPath) {
+        $alaRt = Join-Path $repoRoot 'build\tools\ala_typed_roundtrip\Release\ala_typed_roundtrip.exe'
+        if (Test-Path $alaRt) {
+            $rtOut = & $alaRt $alaPath 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "FAIL (Tier 2-ala: ala_typed_roundtrip)" -ForegroundColor Red
+                $rtOut | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+                $fail++; $failed += $name
+                continue
+            }
+        }
+    }
+
     # Tier 3: feature-specific verifier (the bespoke verify_<name>.py).
     $verifyOut = & python $verifyPy $aloPath 2>&1
     if ($LASTEXITCODE -eq 0) {
