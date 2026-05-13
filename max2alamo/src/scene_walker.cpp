@@ -515,6 +515,53 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh,
     return true;
 }
 
+// Phase 5g: compose a node's TM with its object offset, producing the
+// matrix the engine sees at the bone slot. The IGame TM accessors
+// (GetLocalTM / GetWorldTM / GetObjectTM) all return the node's TM
+// WITHOUT the object offset. "Affect Pivot Only" in the Max Hierarchy
+// panel (and MaxScript `node.objectoffsetrot = ...`) mutates the object
+// offset; without composing it into the bone matrix, the rotation is
+// silently lost on export. See issue #53 / probe_pivot_orientation*.ms.
+//
+// Composition order: row-vector convention. A vertex `v` at runtime is
+// transformed as `v * bone_matrix`. We want the bone matrix to express
+// the pivot's orientation in parent space, so that a point in pivot
+// space transforms correctly:
+//
+//     point_parent = point_pivot * object_offset_TM * node_TM
+//
+// Hence: bone_matrix = object_offset_TM * node_TM (in that order).
+//
+// Identity object offset (the typical case for every existing harness
+// test and every file in the vanilla corpus we have access to) makes
+// this a no-op: result == node_tm byte-identical.
+//
+// Notes:
+//   * We compose rotation + translation but NOT scale. Non-unit object
+//     offset scale is exotic, not exercised by any test or corpus
+//     file, and would require additional thought about how the engine
+//     interprets a scaled bone matrix at runtime. Documented as out-
+//     of-scope risk in the Phase 5g plan.
+//   * BoneSys.createBone's "direction" arg encodes orientation in the
+//     bone object's procedural-display data, NOT in either the node TM
+//     or the object offset. That part of the legacy authoring workflow
+//     is NOT recovered by this fix; users should explicitly rotate
+//     bones via `node.rotation = ...` rather than relying on createBone
+//     direction args.
+Matrix3 compose_with_object_offset(INode* inode, const Matrix3& node_tm)
+{
+    if (!inode) return node_tm;
+
+    Quat   off_rot = inode->GetObjOffsetRot();
+    Point3 off_pos = inode->GetObjOffsetPos();
+
+    Matrix3 offset_tm;
+    off_rot.MakeMatrix(offset_tm);   // pure rotation Matrix3
+    offset_tm.SetTrans(off_pos);
+
+    return offset_tm * node_tm;
+}
+
 // Encode a Max Matrix3 into the alamo_format 4x3 column-major-by-element
 // layout. Phase 4c established this for world TMs; Phase 5a reuses it
 // for both world TMs (synthetic per-mesh bones) and local-to-parent TMs
@@ -603,10 +650,13 @@ void walk_bones(IGameNode* node, std::uint32_t parent_bone_idx,
         // GetLocalTM returns the node's transform relative to its Max
         // parent. For top-level bones this is the world transform (Max
         // scene root is identity); for child bones it's the
-        // parent-inverse-times-world product computed by IGame. Either
-        // way, this is exactly what vanilla 0x206 chunks store.
-        const GMatrix local_tm = node->GetLocalTM();
-        bone.matrix = encode_matrix3(local_tm.ExtractMatrix3());
+        // parent-inverse-times-world product computed by IGame.
+        // Phase 5g: compose with the bone's object offset (e.g. set via
+        // Hierarchy -> Affect Pivot Only), which IGame omits from the
+        // TM accessors but the engine expects in the on-disk bone slot.
+        const Matrix3 node_tm = node->GetLocalTM().ExtractMatrix3();
+        bone.matrix = encode_matrix3(
+            compose_with_object_offset(node->GetMaxNode(), node_tm));
         my_idx = static_cast<std::uint32_t>(scene.bones.size());
         if (INode* max_inode = node->GetMaxNode()) {
             bone_map[max_inode] = my_idx;
@@ -731,7 +781,15 @@ void walk_lights(IGameScene* igame, alamo_format::ExportScene& scene)
         synth_bone.parent_index   = 0;  // child of Root
         synth_bone.visible        = node->IsNodeHidden() == FALSE;
         synth_bone.billboard_mode = 0;
-        synth_bone.matrix = encode_matrix3(node->GetWorldTM().ExtractMatrix3());
+        // Phase 5g: compose with the light's object offset so an
+        // Affect-Pivot-Only rotation on the light propagates to the
+        // synthetic bone (relevant for Spotlight cone-direction encoding
+        // alongside the .Target sibling).
+        {
+            const Matrix3 light_tm = node->GetWorldTM().ExtractMatrix3();
+            synth_bone.matrix = encode_matrix3(
+                compose_with_object_offset(node->GetMaxNode(), light_tm));
+        }
 
         light.bone_index = static_cast<std::uint32_t>(scene.bones.size());
         scene.bones.push_back(std::move(synth_bone));
@@ -750,9 +808,12 @@ void walk_lights(IGameScene* igame, alamo_format::ExportScene& scene)
                 tgt_bone.visible        = target_inode->IsNodeHidden() == FALSE;
                 tgt_bone.billboard_mode = 0;
                 // Target's world TM at the current time. snapshot at
-                // frame 0 to match the rest of the export.
+                // frame 0 to match the rest of the export. Phase 5g:
+                // compose with target node's object offset (typically
+                // identity for Targetobject helpers but cheap to honour).
                 Matrix3 tm = target_inode->GetNodeTM(0);
-                tgt_bone.matrix = encode_matrix3(tm);
+                tgt_bone.matrix = encode_matrix3(
+                    compose_with_object_offset(target_inode, tm));
                 scene.bones.push_back(std::move(tgt_bone));
             }
         }
@@ -832,7 +893,14 @@ void walk_proxies(IGameScene* igame, alamo_format::ExportScene& scene)
         synth_bone.parent_index   = 0;
         synth_bone.visible        = gnode->IsNodeHidden() == FALSE;
         synth_bone.billboard_mode = 0;
-        synth_bone.matrix = encode_matrix3(gnode->GetWorldTM().ExtractMatrix3());
+        // Phase 5g: compose with proxy node's object offset. This is
+        // the main path for Alamo_Proxy hardpoints whose firing
+        // direction was authored via Affect Pivot Only.
+        {
+            const Matrix3 proxy_tm = gnode->GetWorldTM().ExtractMatrix3();
+            synth_bone.matrix = encode_matrix3(
+                compose_with_object_offset(gnode->GetMaxNode(), proxy_tm));
+        }
 
         proxy.bone_index = static_cast<std::uint32_t>(scene.bones.size());
         scene.bones.push_back(std::move(synth_bone));
@@ -892,7 +960,15 @@ void walk_node(IGameNode* node, alamo_format::ExportScene& scene,
                     // that the engine animates as a billboard.
                     synth_bone.billboard_mode = static_cast<std::uint32_t>(
                         read_node_user_prop_int(max_node, kPropBillboardMode, 0));
-                    synth_bone.matrix = encode_matrix3(node->GetWorldTM().ExtractMatrix3());
+                    // Phase 5g: compose with the static-mesh node's
+                    // object offset (e.g. mesh-marker hardpoints when
+                    // a future workflow allows Alamo_Export_Geometry=
+                    // true while keeping pivot-rotation directions).
+                    {
+                        const Matrix3 mesh_tm = node->GetWorldTM().ExtractMatrix3();
+                        synth_bone.matrix = encode_matrix3(
+                            compose_with_object_offset(node->GetMaxNode(), mesh_tm));
+                    }
                     connect_bone_index = static_cast<std::uint32_t>(scene.bones.size());
                     ctx.fallback_bone_index = connect_bone_index;
                 }
@@ -1227,7 +1303,12 @@ void walk_animation(IGameScene* igame,
         if (!animatable[i]) continue;
         auto it = max_to_igame.find(animatable[i]);
         if (it == max_to_igame.end()) continue;
-        const Matrix3 m = it->second->GetLocalTM(t_start).ExtractMatrix3();
+        // Phase 5g: compose with the bone's object offset so animation
+        // tracks reflect the same pivot orientation as the static 0x206
+        // bone matrix. (Object offset is typically static across frames;
+        // sampling here at t_start captures it cleanly.)
+        const Matrix3 node_tm = it->second->GetLocalTM(t_start).ExtractMatrix3();
+        const Matrix3 m = compose_with_object_offset(animatable[i], node_tm);
         const Quat q   = extract_rotation_quat(m);
         out_anim.bones[i].default_rotation = pack_quat_int16(q);
     }
@@ -1264,7 +1345,10 @@ void walk_animation(IGameScene* igame,
             if (out_anim.bones[i].idx_rotation < 0) continue;
             auto it = max_to_igame.find(animatable[i]);
             if (it == max_to_igame.end()) continue;
-            const Matrix3 m = it->second->GetLocalTM(t).ExtractMatrix3();
+            // Phase 5g: compose with the bone's object offset per frame
+            // so animation tracks see the pivot rotation consistently.
+            const Matrix3 node_tm = it->second->GetLocalTM(t).ExtractMatrix3();
+            const Matrix3 m = compose_with_object_offset(animatable[i], node_tm);
 
             // Rotation (8b path, unchanged): extract Quat + sign-canonicalise + pack.
             Quat q = extract_rotation_quat(m);
