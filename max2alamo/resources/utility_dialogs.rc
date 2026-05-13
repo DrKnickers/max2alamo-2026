@@ -88,6 +88,24 @@ BEGIN
                     78, 61, 11, 11
 END
 
+// ---- Alamo Proxy Modify-panel rollout ------------------------------------
+//
+// Appears under the Modify panel when an Alamo_Proxy helper is selected.
+// Matches the legacy Petroglyph plugin's rollout: descriptive text plus
+// flag checkboxes that read/write the same Alamo_* user props the
+// Utility panel writes for meshes.
+
+IDD_ALAMO_PROXY_ROLLOUT DIALOGEX 0, 0, 108, 86
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_VISIBLE
+FONT 8, "Ms Shell Dlg", 400, 0, 0x1
+BEGIN
+    LTEXT           "Give this object the name of an alamo render object you want to attach at this node.", IDC_PROXY_DESC, 6, 4, 96, 40
+    AUTOCHECKBOX    "Hidden",
+                    IDC_PROXY_HIDDEN, 8, 50, 90, 10
+    AUTOCHECKBOX    "Alt Dec Stay Hidden",
+                    IDC_PROXY_ALT_DEC_STAY_HIDDEN, 8, 64, 90, 10
+END
+
 // ---- Animation Settings ---------------------------------------------------
 
 IDD_ALAMO_ANIMATION_SETTINGS DIALOGEX 0, 0, 108, 114
