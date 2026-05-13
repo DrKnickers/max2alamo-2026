@@ -34,7 +34,7 @@ Single-file project status + history. Open this first when picking up a new sess
 | 5c | Multi-bone weighted skinning | ✅ shipped | smooth-painted joint splits 50/50 between flanking bones with weights summing to 1.0; verified by `test_smooth_skinned_joint.ms` |
 | 5d | `Alamo_*` user-property family — simple flag reads | ✅ shipped | Walker reads `Alamo_Export_Geometry` (opt-out), `Alamo_Geometry_Hidden`, `Alamo_Collision_Enabled`, `Alamo_Billboard_Mode`; verified by `test_alamo_user_props.ms` |
 | 5e | `Alamo_*` user-property family — helpers-as-bones | ✅ shipped | `IGAME_HELPER` nodes with `Alamo_Export_Transform=true` join the skeleton as bones; verified by `test_helper_as_bone.ms` |
-| 5f | `Alamo_*` user-property family — extra-bone + LOD/Alt | ⏭ next | `Alamo_Is_Extra_Bone`, `Alamo_LOD`, `Alamo_Alt`, `Alamo_Alt_Decrease_Stay_Hidden` semantics resolved |
+| 5f | `Alamo_*` user-property family — remaining props research | ✅ shipped (research-only) | Format research resolved: 3 of 4 props have **zero binary representation** in `.alo`; the 4th (`Alt_Decrease_Stay_Hidden`) is a proxy-chunk field deferred to Phase 7. No walker work needed today. |
 | Utility UI | Faithful clone of the legacy PG Alamo Utility panel | ✅ shipped | Three rollouts (Node Export Options / Quick Selection / Animation Settings) appear under Utilities > More... > Alamo Utility; checkboxes/radios round-trip Alamo_* user properties on the selected node |
 | 6a | Effects11 shader stubs for Max 2026 | ✅ shipped | [PR #18](https://github.com/DrKnickers/max2alamo-2026/pull/18) — all 39 PG shaders load in Max 2026's DXSM with PG parameter UIs |
 | 6b | Per-vertex tangent + binormal export | ✅ shipped | [PR #19](https://github.com/DrKnickers/max2alamo-2026/pull/19) — MikkT via `IGameMesh::GetFaceVertexTangentBinormal`; bump shading works |
@@ -406,23 +406,32 @@ Helper nodes that the user doesn't opt in stay scene-only — their children, in
 
 `test_helper_as_bone` regression: one Dummy with `Alamo_Export_Transform=true` (appears in skeleton with its position preserved as the local-TM translation), one Dummy with no prop (absent from skeleton), one static Box (exports normally — proves the helper pass doesn't disturb the mesh path).
 
-### Phase 5f — extra-bone + LOD/Alt (next)
+### Phase 5f — remaining `Alamo_*` props research (shipped, research-only)
 
-The remaining `Alamo_*` reads each need a chunk of format research before the walker change, hence deferring them to their own sub-phases:
+Format research into the four `Alamo_*` props the Utility panel writes that Phase 5d/5e didn't cover. Sources: Mike Lankamp's `alamo2max.ms` (.alo/.ala reader, treated as ground truth), Gaukler's [Blender ALAMO plugin](https://github.com/Gaukler/Blender-ALAMO-Plugin) (`settings.py`), and our reader's coverage of the 0x205/0x206 bone chunks.
 
-- **`Alamo_Is_Extra_Bone`** → the legacy plugin likely emitted these as a distinct skeleton sub-class (animation-only bones, billboard parents, etc.). Need to identify the on-disk distinction in vanilla content before wiring.
-- **`Alamo_Alt_Decrease_Stay_Hidden`** → semantics unclear from naming alone; needs vanilla-corpus inspection to confirm what bit this drives.
-- **`Alamo_LOD` / `Alamo_Alt`** → likely affect file-level naming / variant-selection rather than per-node fields (the Utility panel's Quick Selection rollout filters by these). Design pass needed before code.
+| Property | On-disk representation | Walker action this phase |
+|---|---|---|
+| `Alamo_Is_Extra_Bone` | **None.** Doesn't appear in Mike's reader or Gaukler's plugin. Pure Max-side authoring marker — the legacy PG plugin used it internally (likely to suppress emission of a `0x602` connection so the bone exports as animation-only / lookat-target), but the resulting `.alo` has no flag for "extra-ness." | No-op. Could be inferred from omitted-connection patterns in a corpus dump, but not needed for v1. |
+| `Alamo_LOD` | **None.** No binary representation. Consumed by the Utility panel's Quick Selection rollout (filter selected nodes by integer LOD value — already shipped in 5d's UI) and possibly by file-naming (`<model>_LOD1.alo`) at the legacy plugin's export time. | No-op. Filename-suffix support can land with Phase 9 polish if user feedback wants it. |
+| `Alamo_Alt` | **None.** Same status as `Alamo_LOD`. No binary representation; UI filter only. | No-op. |
+| `Alamo_Alt_Decrease_Stay_Hidden` | **Proxy chunk (0x603) field.** Read by `alamo2max.ms:604` inside mini-chunk type `8` as `reader.GetLong() != 0`. Only meaningful when the node ends up as a proxy (HP_* convention etc.). For non-proxy nodes Mike's importer writes `false` as a default. | **Deferred to Phase 7** (lights / hardpoints / proxies), where the 0x603 chunk gets implemented. |
+
+Verified along the way: our writer always emits `0x206` bone chunks (Phase 4c convention; vanilla has 44653 × 0x206 vs 18 × 0x205, so we match the dominant pattern). 0x205 is just 0x206 minus the billboard_mode u32; both layouts share the 12-float matrix. No behaviour change needed.
+
+**Conclusion:** Three of the four props have nothing for the walker to do today. The fourth is a proxy-chunk field that belongs with the proxy work in Phase 7. Closing out the Phase 5 series here.
+
+### Phase 7 — Lights, hardpoints, proxies (next)
+
+`0x1300` light containers (with `0x1301` name + `0x1302` data: type, RGB, intensity, atten, hotspot, falloff). Helper-object naming convention: any non-mesh, non-bone Max dummy named `HP_*` (or any helper marked as a proxy via convention) becomes a `0x603` proxy chunk in connections.
+
+**Phase 5f follow-through:** the 0x603 chunk's mini-chunk type 8 (`altDecreaseStayHidden`) now has a known mapping — reads from `Alamo_Alt_Decrease_Stay_Hidden` on the node, writes as a u32 boolean.
+
+Acceptance: a fighter exported with `HP_Weapon_*` dummies has working hardpoints in EaW (weapons fire from the correct positions in-game).
 
 ### Phase 6e (optional polish) — Walker-side `.export.log` consistency
 
 `.export.log` currently dumps params with their walker-side values (Max's `TYPE_FRGBA` returns alpha=1). The on-disk bytes correctly apply the Phase 6c float3 alpha-zero convention before writing, so a quick reader of the log might see `Emissive = (0, 0, 0, 1)` and think the bytes say the same. Cheap fix: apply the same `is_float3` zero-out at log time, so the diagnostic mirrors the bytes. Pure clarity; no functional change.
-
-### Phase 7 — Lights, hardpoints, proxies
-
-`0x1300` light containers (with `0x1301` name + `0x1302` data: type, RGB, intensity, atten, hotspot, falloff). Helper-object naming convention: any non-mesh, non-bone Max dummy named `HP_*` (or any helper marked as a proxy via convention) becomes a `0x603` proxy chunk in connections.
-
-Acceptance: a fighter exported with `HP_Weapon_*` dummies has working hardpoints in EaW (weapons fire from the correct positions in-game).
 
 ### Phase 8 — Animation export incl. visibility tracks
 
