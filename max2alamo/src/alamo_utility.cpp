@@ -1,10 +1,12 @@
 #include "alamo_utility.h"
+#include "alamo_proxy_helper.h"  // kAlamoProxyClassID, for Hidden/AltDec ungate
 
 #include "../resources/utility_resource.h"
 
 #include <Max.h>
 #include <maxapi.h>
 #include <iparamb2.h>
+#include <object.h>      // INode::GetObjectRef()
 #include <utilapi.h>
 #include <plugapi.h>
 #include <custcont.h>   // ISpinnerControl, GetISpinner, SetupIntSpinner
@@ -83,6 +85,20 @@ INode* GetSingleSelectedNode(Interface* ip)
     return ip->GetSelNode(0);
 }
 
+// True when the node's underlying Object* is our Alamo_Proxy helper
+// class. Used to ungate the Hidden / Alt Dec Stay Hidden checkboxes
+// for proxy nodes: legacy PG plugin let users edit those flags
+// directly via the Utility panel (the gating on Export Geometry was
+// a visual grouping for meshes; the flags themselves apply to any
+// exportable node, particularly proxies).
+bool IsAlamoProxyNode(INode* node)
+{
+    if (!node) return false;
+    Object* obj = node->GetObjectRef();
+    if (!obj) return false;
+    return obj->ClassID() == kAlamoProxyClassID;
+}
+
 // ---- Dialog procs ---------------------------------------------------------
 
 // Pull the AlamoUtility* this dialog was constructed for. Stored in
@@ -114,6 +130,13 @@ void RefreshNodeOptionsState(AlamoUtility* util)
     const bool exportXfm = have && ReadBoolProp(node, kPropExportTransform);
     const bool exportGeo = have && ReadBoolProp(node, kPropExportGeometry);
     const int  bbMode    = have ? ReadIntProp(node, kPropBillboardMode, 0) : 0;
+    // Alamo_Proxy helpers expose Hidden / Alt Dec Stay Hidden directly
+    // (not gated on Export Geometry, which is mesh-specific). The
+    // legacy PG plugin's "Export Geometry" gating was a visual group
+    // for the mesh-only Enable Collision sub-toggle; the hidden /
+    // alt-dec-stay-hidden flags apply to any exportable node, and
+    // proxies are the dominant non-mesh user of them.
+    const bool isProxy = have && IsAlamoProxyNode(node);
 
     // Master toggles (always editable when a node is selected)
     EnableCtrl(h, IDC_NODE_EXPORT_TRANSFORM, have);
@@ -125,9 +148,14 @@ void RefreshNodeOptionsState(AlamoUtility* util)
     EnableCtrl(h, IDC_BILLBOARD_HELP,          have && exportXfm);
     for (int id : kBillboardRadioIds) EnableCtrl(h, id, have && exportXfm);
 
+    // Enable Collision: mesh-only (requires Export Geometry checked).
     EnableCtrl(h, IDC_NODE_ENABLE_COLLISION,   have && exportGeo);
-    EnableCtrl(h, IDC_NODE_HIDDEN,             have && exportGeo);
-    EnableCtrl(h, IDC_NODE_ALT_DEC_STAY_HIDDEN,have && exportGeo);
+    // Hidden / Alt Dec Stay Hidden: editable when Export Geometry is
+    // checked (mesh path) OR when the selected node is an Alamo_Proxy
+    // (proxy path -- the legacy plugin let users edit these flags
+    // directly for proxies without needing the mesh-side gate).
+    EnableCtrl(h, IDC_NODE_HIDDEN,             have && (exportGeo || isProxy));
+    EnableCtrl(h, IDC_NODE_ALT_DEC_STAY_HIDDEN, have && (exportGeo || isProxy));
 
     // Checkbox / radio state
     CheckDlgButton(h, IDC_NODE_EXPORT_TRANSFORM, exportXfm ? BST_CHECKED : BST_UNCHECKED);
