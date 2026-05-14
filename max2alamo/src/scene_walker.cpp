@@ -16,15 +16,21 @@
 
 #include "alamo_format/shader_table.h"
 #include "alamo_format/skin_weights.h"
+#include "alamo_format/shadow_volume_check.h"
+
+#include <maxscript/maxscript.h>
+#include <maxscript/util/listener.h>
 
 #include "alamo_proxy_helper.h"  // for kAlamoProxyClassID
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdarg>
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -236,6 +242,19 @@ constexpr const TCHAR* kPropCollisionEnabled= _T("Alamo_Collision_Enabled");
 constexpr const TCHAR* kPropGeometryHidden  = _T("Alamo_Geometry_Hidden");
 constexpr const TCHAR* kPropBillboardMode   = _T("Alamo_Billboard_Mode");
 
+// Phase 12: legacy PG MaxScript hook to mark a mesh as a shadow-volume
+// regardless of material. Read as an int (legacy convention: 1 = on);
+// when present and == 1 we run the closed-volume validator even if the
+// mesh's shader isn't *ShadowVolume.fx.
+constexpr const TCHAR* kPropShadowVolume    = _T("_ALAMO_SHADOW_VOLUME");
+
+// Phase 12: the two shader names that mark a mesh as a stencil shadow
+// volume in the Alamo engine. Catalogued in shader_table.cpp; vanilla
+// FoC corpus survey: 107 MeshShadowVolume + 30 RSkinShadowVolume across
+// a 100-file sample.
+constexpr const char* kShaderMeshShadowVolume  = "MeshShadowVolume.fx";
+constexpr const char* kShaderRSkinShadowVolume = "RSkinShadowVolume.fx";
+
 // Inspect a Max material and figure out what shader / texture pair best
 // represents it for Phase 4 export. Decision tree:
 //   1. DXMaterial -> shader_name = its .fx filename; base_texture = first
@@ -352,6 +371,136 @@ struct SkinContext {
 // back to a rigid binding (slot 0 = ctx.fallback_bone_index, weight =
 // 1). For static meshes the caller short-circuits before even getting
 // here.
+// ---- Phase 12: shadow-volume closed-manifold check -----------------------
+
+// True when the mesh's effective shader (after Alamo_Shader_Name override)
+// is one of the two engine shadow-volume shaders.
+bool is_shadow_volume_shader(const std::string& shader_name)
+{
+    return shader_name == kShaderMeshShadowVolume
+        || shader_name == kShaderRSkinShadowVolume;
+}
+
+// Build a position-deduplicated triangle list from the walker's emitted
+// per-vertex data. The walker splits vertices on UV / normal seams so
+// edge-counting on raw indices would mis-flag closed meshes as open.
+// Position-space dedup recovers the true topology.
+//
+// Tolerance 1e-5 chosen to absorb float drift from the IGame coordinate
+// transform (typical max delta on identical positions across the
+// pipeline is ~1e-6) while keeping intentional 1e-4-spaced vertices
+// distinct. Vanilla content has been checked to not contain
+// sub-1e-5-spaced vertex pairs that should remain separate.
+std::vector<alamo_format::PositionTriangle>
+build_position_triangles(const alamo_format::ExportSubmesh& sub)
+{
+    constexpr float kPosEps = 1e-5f;
+    struct PosKey {
+        int x_q, y_q, z_q;  // quantized position
+        bool operator<(const PosKey& o) const {
+            if (x_q != o.x_q) return x_q < o.x_q;
+            if (y_q != o.y_q) return y_q < o.y_q;
+            return z_q < o.z_q;
+        }
+    };
+    auto quantize = [](float f) -> int {
+        // Scale by 1/eps and round to nearest int to bucket nearby positions.
+        return static_cast<int>(std::lround(f / kPosEps));
+    };
+
+    std::map<PosKey, int> pos_to_idx;
+    std::vector<int> remap(sub.vertices.size(), -1);
+    for (std::size_t i = 0; i < sub.vertices.size(); ++i) {
+        const auto& p = sub.vertices[i].position;
+        PosKey k{quantize(p[0]), quantize(p[1]), quantize(p[2])};
+        auto it = pos_to_idx.find(k);
+        if (it == pos_to_idx.end()) {
+            const int new_idx = static_cast<int>(pos_to_idx.size());
+            pos_to_idx.emplace(k, new_idx);
+            remap[i] = new_idx;
+        } else {
+            remap[i] = it->second;
+        }
+    }
+
+    std::vector<alamo_format::PositionTriangle> tris;
+    tris.reserve(sub.indices.size() / 3u);
+    for (std::size_t i = 0; i + 2 < sub.indices.size(); i += 3u) {
+        const std::uint32_t a = sub.indices[i + 0];
+        const std::uint32_t b = sub.indices[i + 1];
+        const std::uint32_t c = sub.indices[i + 2];
+        if (a >= remap.size() || b >= remap.size() || c >= remap.size()) continue;
+        tris.push_back({remap[a], remap[b], remap[c]});
+    }
+    return tris;
+}
+
+// Emit a one-line warning to the MAXScript Listener. Safe to call when
+// the_listener is null (returns silently). Wide-char buffer format
+// because TCHAR is wchar_t in our UNICODE build.
+void listener_warn(const TCHAR* fmt, ...)
+{
+    if (!the_listener) return;
+    va_list args;
+    va_start(args, fmt);
+    TCHAR buf[1024];
+    _vsntprintf_s(buf, _countof(buf), _TRUNCATE, fmt, args);
+    va_end(args);
+    the_listener->edit_stream->puts(buf);
+    the_listener->edit_stream->flush();
+}
+
+// Check the mesh's first submesh (Phase 4 single-submesh assumption,
+// per build_mesh's comments) for shadow-volume status. If it is one,
+// run the closed-manifold validator. On failure, append a warning line
+// to `out.warnings` for the .export.log AND emit the same warning to
+// the MAXScript Listener.
+//
+// The two trigger conditions are checked in this order:
+//   1. shader_name is MeshShadowVolume.fx or RSkinShadowVolume.fx
+//   2. node has _ALAMO_SHADOW_VOLUME user-prop set to 1
+// Either alone is sufficient; both at once is fine (single check fires).
+void validate_shadow_volume_if_applicable(INode* inode,
+                                          alamo_format::ExportMesh& out)
+{
+    if (out.submeshes.empty()) return;
+    const auto& sub = out.submeshes.front();
+    const bool by_shader   = is_shadow_volume_shader(sub.material.shader_name);
+    const bool by_userprop = inode && read_node_user_prop_int(inode, kPropShadowVolume, 0) == 1;
+    if (!by_shader && !by_userprop) return;
+
+    auto tris = build_position_triangles(sub);
+    const auto r = alamo_format::check_shadow_volume_closed(tris);
+    if (r.is_closed) return;
+
+    // Format the warning. Mirrors the legacy PG exporter's tone --
+    // tells the user what is broken AND what the visible consequence is.
+    std::ostringstream os;
+    os << "WARNING: shadow-volume mesh '" << out.name
+       << "' has " << r.non_manifold_edge_count
+       << " non-manifold edge(s); the engine's stencil shadow pass "
+       << "will render incorrectly.";
+    out.warnings.push_back(os.str());
+
+    // Surface the same string to the user immediately (the .export.log
+    // is written at end-of-export; Listener feedback is now). Convert
+    // the UTF-8 mesh name to a wide string for the TCHAR format string
+    // (TCHAR == wchar_t in our UNICODE build).
+    std::wstring wname;
+    {
+        const int n = MultiByteToWideChar(CP_UTF8, 0, out.name.data(),
+                                          static_cast<int>(out.name.size()),
+                                          nullptr, 0);
+        wname.resize(static_cast<std::size_t>(n));
+        MultiByteToWideChar(CP_UTF8, 0, out.name.data(),
+                            static_cast<int>(out.name.size()),
+                            wname.data(), n);
+    }
+    listener_warn(_T("max2alamo: WARNING: shadow-volume mesh '%s' has %d non-manifold edge(s); the engine's stencil shadow pass will render incorrectly.\n"),
+                  wname.c_str(),
+                  r.non_manifold_edge_count);
+}
+
 alamo_format::skin::VertexBinding
 resolve_multi_bone(const SkinContext& ctx, int vert_idx)
 {
@@ -512,6 +661,14 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh,
         out.is_hidden = node->IsNodeHidden() != FALSE;
     }
     out.is_collision = read_node_user_prop_bool(node_inode, kPropCollisionEnabled, false);
+
+    // Phase 12: closed-volume check for shadow-volume meshes. Detects
+    // by shader name (MeshShadowVolume.fx / RSkinShadowVolume.fx) or
+    // the legacy _ALAMO_SHADOW_VOLUME user-prop. Non-fatal -- warns to
+    // .export.log + MAXScript Listener; export continues. Matches the
+    // legacy PG max2alamo exporter's warn-don't-abort behaviour.
+    validate_shadow_volume_if_applicable(node_inode, out);
+
     return true;
 }
 
