@@ -28,8 +28,32 @@ namespace max2alamo {
 // (0x6ed3a4f1, 0x2b9c7d05) and AlamoUtility (0x6ed3a4f1, 0x4f51ab63).
 inline constexpr Class_ID kAlamoProxyClassID(0x6ed3a4f1, 0x8a721d04);
 
-// Singleton accessor for the helper's ClassDesc -- consumed by
-// LibClassDesc in plugin_entry.cpp.
+// Phase 10d: the LEGACY Petroglyph max2alamo plugin (Max 9 era, shipped
+// with Empire at War SDK) registered its helper class with a different
+// Class_ID. Files saved with that legacy plugin reference this ID; in
+// Max 2026 with only the modern Class_ID registered, Max substitutes
+// them as `Missing_Helper` placeholders on load and the proxies lose
+// their class identity.
+//
+// Identified via Phase 10a's .max OLE-storage parse
+// (re/scripts/dump_max_class_table.py against ThrREv Ascendancy
+// fixtures -- MC80_D + IFTX_D reference this exact ID for their
+// Missing_Helper-substituted nodes, with class table description
+// "Exporter and tools for the Alamo engine" naming the legacy plugin).
+//
+// We register a second ClassDesc claiming this ID so legacy files load
+// with real `Alamo_Proxy` instances. The legacy ClassDesc is hidden
+// (`IsPublic() == FALSE`) so it doesn't appear in Create > Helpers >
+// Standard alongside the modern Alamo_Proxy -- modern authoring still
+// uses kAlamoProxyClassID. Since `AlamoProxyHelper::ClassID()` always
+// returns the MODERN Class_ID, files opened via the legacy ClassDesc
+// auto-migrate to the modern Class_ID on save -- one open+save cycle
+// upgrades a file to modern conventions, and subsequent opens find
+// the modern ID directly without going through the shim.
+inline constexpr Class_ID kLegacyAlamoProxyClassID(0x52263841, 0x08194485);
+
+// Singleton accessors -- consumed by LibClassDesc in plugin_entry.cpp.
 ClassDesc* GetAlamoProxyHelperClassDesc();
+ClassDesc* GetLegacyAlamoProxyHelperClassDesc();
 
 }  // namespace max2alamo

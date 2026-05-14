@@ -38,6 +38,16 @@ def main(alo_path):
     # on the helpers themselves. We don't assert visibility tracks here since
     # the source fixture has no Alamo_Anim_* clip metadata.
 
+    # #A4 Phase 10d: legacy proxies (originally Missing_Helper substitutions
+    # in pre-10d audit) should now resolve to real Alamo_Proxy instances and
+    # emit as 0x603 chunks. The legacy fixture has 62 nodes referencing the
+    # legacy plugin's Class_ID; we expect ~60 proxies in the export (small
+    # tolerance for the few that might be Dummies or otherwise excluded).
+    if hasattr(alo, "proxies") and len(alo.proxies) < 50:
+        errors.append(f"#A4 proxy count = {len(alo.proxies)}, expected ~62 "
+                      f"(legacy plugin's Class_ID should resolve via Phase 10d "
+                      f"hidden ClassDesc -> real Alamo_Proxy instances -> 0x603 chunks)")
+
     if errors:
         print("FAIL:", file=sys.stderr)
         for e in errors: print(f"  - {e}", file=sys.stderr)
