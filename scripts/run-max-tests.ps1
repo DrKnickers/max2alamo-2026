@@ -133,8 +133,18 @@ foreach ($t in $tests) {
     # regardless of which test produced it -- catches structural /
     # skinning / connection regressions that test-specific verifiers
     # might miss. Lives in tests/maxscript/verify/validate_alo.py.
+    #
+    # Phase 10b: legacy compat tests (test_legacy_*) use loose mode
+    # because legacy artist-authored content has degenerate-tangent
+    # corner cases (e.g. tangent ~ normal due to UV seams or zero-area
+    # UV triangles) that strict mode rejects. Our clean-authored tests
+    # stay strict.
     $validatePy = Join-Path $verifyDir 'validate_alo.py'
-    $validateOut = & python $validatePy $aloPath 2>&1
+    if ($name -like 'test_legacy_*') {
+        $validateOut = & python $validatePy $aloPath --loose 2>&1
+    } else {
+        $validateOut = & python $validatePy $aloPath 2>&1
+    }
     if ($LASTEXITCODE -ne 0) {
         Write-Host "FAIL (Tier 1: universal invariants)" -ForegroundColor Red
         $validateOut | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
