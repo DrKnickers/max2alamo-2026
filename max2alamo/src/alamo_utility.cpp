@@ -510,12 +510,21 @@ namespace {
 // from the freshly-loaded scene's user props. Also clears state on
 // PRE_OPEN / SYSTEM_PRE_RESET so users don't see stale data during
 // transitions. (Spec Risk #4.)
+//
+// Phase 11b.2.2: also handles NOTIFY_SCENE_UNDO / NOTIFY_SCENE_REDO so
+// Ctrl-Z / Ctrl-Y after a spinner commit refreshes the rollout UI. The
+// user-prop revert is already correct via theHold; only the spinner /
+// combo display was stale. RefreshAnimationSettings is safe to call
+// here because SetValue uses notify=FALSE and the combo path is
+// guarded by SuppressComboGuard.
 void OnFileSceneNotify(void* param, NotifyInfo* info)
 {
     auto* util = static_cast<AlamoUtility*>(param);
     if (!util || !util->m_hAnimSettings) return;
     switch (info->intcode) {
     case NOTIFY_FILE_POST_OPEN:
+    case NOTIFY_SCENE_UNDO:
+    case NOTIFY_SCENE_REDO:
         RefreshAnimationSettings(util->m_hAnimSettings);
         break;
     case NOTIFY_FILE_PRE_OPEN:
@@ -554,9 +563,13 @@ void AlamoUtility::BeginEditParams(Interface* ip, IUtil* /*iu*/)
     // Phase 11b.2: subscribe to file-load notifications so the
     // Animation Settings rollout repopulates after File -> Open and
     // clears during file/scene transitions.
+    // Phase 11b.2.2: also subscribe to scene undo/redo so the rollout
+    // tracks Ctrl-Z / Ctrl-Y after spinner commits.
     RegisterNotification(OnFileSceneNotify, this, NOTIFY_FILE_POST_OPEN);
     RegisterNotification(OnFileSceneNotify, this, NOTIFY_FILE_PRE_OPEN);
     RegisterNotification(OnFileSceneNotify, this, NOTIFY_SYSTEM_PRE_RESET);
+    RegisterNotification(OnFileSceneNotify, this, NOTIFY_SCENE_UNDO);
+    RegisterNotification(OnFileSceneNotify, this, NOTIFY_SCENE_REDO);
 }
 
 void AlamoUtility::EndEditParams(Interface* ip, IUtil* /*iu*/)
@@ -564,6 +577,8 @@ void AlamoUtility::EndEditParams(Interface* ip, IUtil* /*iu*/)
     UnRegisterNotification(OnFileSceneNotify, this, NOTIFY_FILE_POST_OPEN);
     UnRegisterNotification(OnFileSceneNotify, this, NOTIFY_FILE_PRE_OPEN);
     UnRegisterNotification(OnFileSceneNotify, this, NOTIFY_SYSTEM_PRE_RESET);
+    UnRegisterNotification(OnFileSceneNotify, this, NOTIFY_SCENE_UNDO);
+    UnRegisterNotification(OnFileSceneNotify, this, NOTIFY_SCENE_REDO);
 
     if (!ip) { m_ip = nullptr; return; }
     if (m_hNodeOptions)  ip->DeleteRollupPage(m_hNodeOptions);
