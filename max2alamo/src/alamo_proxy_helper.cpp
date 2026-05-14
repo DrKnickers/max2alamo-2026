@@ -240,4 +240,45 @@ ClassDesc* GetAlamoProxyHelperClassDesc()
     return &g_alamo_proxy_desc;
 }
 
+// Phase 10d: legacy-Class_ID ClassDesc. Same underlying AlamoProxyHelper
+// implementation; differs only in IsPublic (FALSE, so it doesn't appear
+// in Create > Helpers menus alongside the modern entry) and ClassID
+// (returns kLegacyAlamoProxyClassID instead of kAlamoProxyClassID).
+//
+// When Max loads a .max file referencing the legacy Class_ID, it walks
+// the registered ClassDescs and finds this one -- instantiates a real
+// AlamoProxyHelper rather than a Missing_Helper placeholder. From the
+// user's perspective, opening a ThrREv-era legacy file works exactly
+// like opening a modern one: proxies appear as Alamo_Proxy helpers,
+// the Utility panel binds to them, the walker emits them as `0x603`
+// proxy chunks.
+//
+// SCID: legacy plugin registered SCID 0x5ddb3626 per Phase 10a's
+// ClassDirectory3 parse. That's unusual (standard helper SCID is
+// HELPER_CLASS_ID = 0x50) -- it may be a CAT-rig-related subcategory
+// or simply how the legacy plugin chose to category itself. We try
+// the verbatim value first; if Max rejects the registration, the
+// fallback is HELPER_CLASS_ID and we accept that legacy files might
+// still substitute (but the modern Class_ID still works for modern
+// authoring).
+class LegacyAlamoProxyHelperClassDesc : public ClassDesc {
+public:
+    int          IsPublic() override             { return FALSE; }  // hidden from Create menu
+    void*        Create(BOOL /*loading*/) override { return new AlamoProxyHelper(); }
+    const TCHAR* ClassName() override            { return _T("Alamo Proxy (legacy)"); }
+    const TCHAR* NonLocalizedClassName() override { return _T("Alamo_Proxy"); }
+    SClass_ID    SuperClassID() override         { return HELPER_CLASS_ID; }
+    Class_ID     ClassID() override              { return kLegacyAlamoProxyClassID; }
+    const TCHAR* Category() override             { return _T("Standard"); }
+    const TCHAR* InternalName() override         { return _T("Alamo_Proxy_Legacy"); }
+    HINSTANCE    HInstance() override            { return g_h_instance; }
+};
+
+LegacyAlamoProxyHelperClassDesc g_legacy_alamo_proxy_desc;
+
+ClassDesc* GetLegacyAlamoProxyHelperClassDesc()
+{
+    return &g_legacy_alamo_proxy_desc;
+}
+
 }  // namespace max2alamo
