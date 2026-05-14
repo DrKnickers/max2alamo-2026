@@ -96,6 +96,12 @@ struct ExportMesh {
     std::vector<ExportSubmesh>  submeshes;
     bool                        is_hidden    = false;
     bool                        is_collision = false;
+
+    // Walker-side diagnostics surfaced into .export.log without aborting
+    // the export. Phase 12: shadow-volume closed-manifold violations are
+    // the first user. Format: one human-readable line per warning, no
+    // trailing newline. Empty by default.
+    std::vector<std::string>    warnings;
     std::array<float, 3>        bbox_min{0.f, 0.f, 0.f};
     std::array<float, 3>        bbox_max{0.f, 0.f, 0.f};
 

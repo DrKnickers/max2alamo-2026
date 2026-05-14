@@ -374,12 +374,26 @@ MAXScript hooks (mesh-level, scene-level):
 |---|---|
 | `_ALAMO_BILLBOARDS` | enable billboard processing on a mesh |
 | `_ALAMO_BONES_PER_VERTEX` | choose RSkin (1) vs B4I4 (4) vertex layout |
-| `_ALAMO_SHADOW_VOLUME` | mark as shadow volume mesh |
+| `_ALAMO_SHADOW_VOLUME` | mark as shadow volume mesh (Phase 12: triggers closed-volume validation on export) |
 | `_ALAMO_TANGENT_SPACE` | force tangent/binormal generation |
 | `_ALAMO_VERTEX_TYPE` | override vertex format selection |
 | `_ALAMO_Z_SORT` | enable Z-sorting (likely transparent meshes) |
 
 Our Max 2026 plugin should accept the same property names so existing Max scenes ported from EaW Mod Tools work without re-tagging.
+
+### Shadow-volume closed-manifold validation (Phase 12)
+
+The Alamo engine renders stencil shadows from meshes whose material uses `MeshShadowVolume.fx` or `RSkinShadowVolume.fx`. The stencil algorithm requires every edge of the mesh to be shared by exactly two triangles -- a closed 2-manifold -- otherwise the resulting shadow has visible holes / "light leaks".
+
+The legacy Petroglyph `max2alamo` exporter warned (but did not abort) when a shadow-volume mesh violated this. **Phase 12 reproduces that behaviour:**
+
+- **Detection** (in [scene_walker.cpp](../max2alamo/src/scene_walker.cpp), `validate_shadow_volume_if_applicable`): a mesh is shadow-volume if either its emitted shader is one of the two `*ShadowVolume.fx` shaders, **or** the legacy `_ALAMO_SHADOW_VOLUME` int user-prop is set to `1` on the node. Either trigger alone is sufficient.
+- **Validation** (in [alamo_format/src/shadow_volume_check.cpp](../alamo_format/src/shadow_volume_check.cpp)): position-deduplicate the walker's emitted triangle list (ALO export vertex-splits on UV / normal seams, which would falsely flag a closed mesh as open if done in vertex-index space), then build an edge-incidence map; an edge belongs to exactly two triangles iff its `count == 2`. Zero-area triangles are silently skipped (legacy authored content sometimes contains them; PG tolerated them too).
+- **Reporting**: one warning per offending mesh emitted to both the `.export.log` and the MAXScript Listener:
+  `WARNING: shadow-volume mesh '<node-name>' has <N> non-manifold edge(s); the engine's stencil shadow pass will render incorrectly.`
+- **Policy**: warn-only. Export continues; the `.alo` is produced with the offending mesh intact. The author can ignore the warning if the resulting visual artifact is acceptable, fix the mesh, or remove the shadow-volume shader assignment.
+
+The legacy `_ALAMO_SHADOW_VOLUME` MaxScript hook is the secondary trigger, kept for compatibility with scenes ported from older PG tooling that may set the prop without assigning the matching shader.
 
 ---
 
