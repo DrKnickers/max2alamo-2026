@@ -53,7 +53,11 @@ extern "C" __declspec(dllexport) int LibNumberClasses()
     // [0] AloExport (SceneExport)
     // [1] AlamoUtility (Utilities command panel)
     // [2] AlamoProxyHelper (Create panel > Helpers > Standard)
-    return 3;
+    // [3] LegacyAlamoProxyHelper (Phase 10d: hidden ClassDesc for the
+    //     legacy Petroglyph plugin's Class_ID, so .max files saved
+    //     with the Max 9-era max2alamo.dle load with real Alamo_Proxy
+    //     instances instead of Missing_Helper placeholders)
+    return 4;
 }
 
 extern "C" __declspec(dllexport) ClassDesc* LibClassDesc(int i)
@@ -62,6 +66,7 @@ extern "C" __declspec(dllexport) ClassDesc* LibClassDesc(int i)
         case 0:  return &g_alo_export_desc;
         case 1:  return max2alamo::GetAlamoUtilityClassDesc();
         case 2:  return max2alamo::GetAlamoProxyHelperClassDesc();
+        case 3:  return max2alamo::GetLegacyAlamoProxyHelperClassDesc();
         default: return nullptr;
     }
 }
