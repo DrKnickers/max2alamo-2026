@@ -137,3 +137,22 @@ The Utility-panel Animation Settings rollout drives multi-clip authoring + per-c
 15. **Export the scene from step 9.** Verify: per-clip `.ala` siblings emit (`<basename>_WALK.ala`, `<basename>_ATTACK.ala`); `.export.log` shows per-clip lines (Phase 11b.1's coverage). Round-trip the `.ala` files through Mike Lankamp's importer (Tier 4 cross-tool above).
 
 **Negative tripwire G** (manual sanity check during development): in `max2alamo/src/animation_settings_dlg.cpp::ApplySelectedClip`, comment out the `SetAnimRangeAndNotify(util->m_ip, start, end)` line. Rebuild. Run step 5 above. Expected: spinners flip to `WALK`'s range but time-slider does NOT scrub. Confirms the smoke test would catch a regression of the user-requested "combo selection scrubs timeline" behavior.
+
+### Tier 4 — Legacy `.max` clip-data import (Phase 11c)
+
+The legacy Petroglyph max2alamo.dle Utility plugin (Max 6/8/9, EaW/FoC/UaW eras) stored per-clip animation metadata as 342-byte `appData` records keyed off `Class_ID(0x70a24090, 0x60c90f03)`. Phase 11c's `NOTIFY_FILE_POST_OPEN` hook translates those records into Phase 11b's `Alamo_Anim_Clips` + `Alamo_Anim_<NAME>_Start/_End` user-prop convention so the Animation Settings rollout surfaces the imported clips without user action.
+
+Catch2 covers the pure-C++ scanner (14 cases under `alamo_format/tests/legacy_clip_scan_test.cpp`); these manual steps cover the Max-SDK glue (file IO + user-prop write + animationRange extend) plus the cross-tool round-trip that no headless harness reaches.
+
+Fixtures used (local-only, under `tests/corpus/legacy/ThrREv/Ascendancy/`): `Super Battle Droid/CIS_SBD.max` (8 clips, 400 frames), `Snowtrooper/EI_SNOWTROOPER.max` (60 clips, 2488 frames), `Stormtrooper/Stormtrooper.max` (60 clips, 2488 frames — identical clip set to EI_SNOWTROOPER).
+
+1. **Open Max with an empty scene.** Open Utilities → More → Alamo Utility. Verify: Animation Settings rollout combo shows `-- none --`.
+2. **File → Open → `CIS_SBD.max`.** Verify: MAXScript Listener shows `max2alamo: imported 8 legacy animation clip(s) from <path>`; rollout combo populates with 8 entries (MOVE_00 first); selecting any clip loads its `Start`/`End` into the spinners. MAXScript: `getUserProp rootNode "Alamo_Anim_Clips"` returns `"MOVE_00|IDLE_00|IDLE_01|TRANSITION_00|ATTACK_00|ATTACKIDLE_00|DIE_00|DIE_01"`; `getUserProp rootNode "Alamo_Anim_MOVE_00_Start"` returns `1`; `Alamo_Anim_DIE_01_End` returns `400`; Max's `animationRange` covers `[0, 400]` (extended from the 100-frame default).
+3. **Click `Display All`.** Verify: time-slider snaps to `[1, 400]` (the union of all 8 clip ranges).
+4. **File → Open → `EI_SNOWTROOPER.max`.** Verify: Listener shows `imported 60 legacy animation clip(s)`; rollout populates with 60 entries (ATTACKFLINCHB_00 first, TURNR_00 last); `animationRange` covers `[0, 2488]`.
+5. **Click `<<` repeatedly to walk through clips.** Verify: each combo selection scrubs the time-slider to that clip's stored range; spinner Start = clip's start frame; spinner End = clip's end frame.
+6. **Modern-precedence policy:** with `EI_SNOWTROOPER.max` open, use MAXScript `setUserProp rootNode "Alamo_Anim_Clips" "MYCLIP"`, then File → Save → File → New → File → Open the same file. Verify: Listener does NOT show "imported N clips" (modern wins; legacy import skipped); rollout shows `MYCLIP` only. Confirms one-way upgrade legacy → modern; saving with modern props pins the file as modern.
+7. **Export `EI_SNOWTROOPER.max`** via File → Export → Alamo Object (.alo). Verify: 60 sibling `.ala` files emit (`EI_SNOWTROOPER_ATTACKFLINCHB_00.ala`, ..., `EI_SNOWTROOPER_TURNR_00.ala`); `.export.log` shows `Animation: 60 clip(s) declared, 60 written`. Per Phase 11b.1's contract, each `.ala` covers its `[start, end]` frame range from the imported user props.
+8. **Cross-tool round-trip:** open one of the emitted `.ala` files in Mike Lankamp's `alamo2max.ms` MAXScript importer (any supported Max version). Verify: no MAXScript Listener errors; scene reconstructs with the expected `nFrames` for that clip.
+
+**Negative tripwire H** (manual sanity check during development): in `alamo_format/src/legacy_clip_scan.cpp`, flip one byte of `kLegacyUtilityClassIdBytes` (e.g. `0x90` → `0x91`). Rebuild. Re-open `CIS_SBD.max`. Expected: Listener silent (no "imported N clips" line); rollout combo shows `-- none --`. Confirms the importer is keyed off the exact recovered Class_ID and a regression mutating it would surface immediately.
