@@ -9,20 +9,40 @@
 #include "alamo_format/export_scene.h"
 
 #include <string>
+#include <vector>
 
 class Interface;  // <maxapi.h> -- forward-declared to avoid pulling Max.h here
 
 namespace max2alamo {
 
-// Populates `out_scene` with the current scene's exportable meshes /
-// bones / lights / proxies, and `out_anim` with sampled per-frame
-// rotation tracks (Phase 8b scope: FoC format, rotation only).
+// One clip's sampled animation. The clip `name` is used by the caller
+// to derive the per-clip .ala filename (`<asset>_<NAME>.ala`); the
+// .ala format itself has no on-disk clip-name field (Mike Lankamp's
+// importer auto-discovers via the `<basename>_*.ALA` glob -- see
+// re/output/phase11_research/11a_findings.md).
 //
-// Animation sampling reads `Alamo_Anim_Start` / `Alamo_Anim_End` /
-// `Alamo_Anim_Name` user properties from the scene-root node. If those
-// are absent or yield an invalid range, `out_anim` stays default-
-// constructed (no animation data; the caller should skip the .ala
-// write).
+// `name` is empty for the single-clip un-suffixed back-compat path;
+// the exporter then writes a bare `<asset>.ala`.
+struct ClipAnimation {
+    std::string                 name;
+    alamo_format::AlaAnimation  anim;
+};
+
+// Populates `out_scene` with the current scene's exportable meshes /
+// bones / lights / proxies, and `out_clips` with one ClipAnimation per
+// authored animation clip.
+//
+// Animation sampling reads clip metadata from the scene-root node's
+// user properties (Phase 11b):
+//   1. If `Alamo_Anim_Clips` is set (pipe-delimited clip-name list),
+//      each name `<NAME>` is paired with `Alamo_Anim_<NAME>_Start` /
+//      `_End` user props for its frame range. Per-clip failures (e.g.
+//      missing `_Start`) are logged and skipped; successful clips
+//      still emit.
+//   2. Else if un-suffixed `Alamo_Anim_Start` / `_End` / `_Name` are
+//      set (Phase 8b/c/d back-compat), the walker emits a single clip
+//      with empty name (-> bare `<asset>.ala` filename).
+//   3. Else `out_clips` stays empty (no .ala emitted).
 //
 // On failure, returns false and writes a one-line description into
 // `out_error`. Always seeds `out_scene` with one synthetic Root bone
@@ -30,7 +50,7 @@ namespace max2alamo {
 // callers can choose to ship a meshless-but-well-formed file or abort.
 bool walk_scene(Interface*                  max_interface,
                 alamo_format::ExportScene&  out_scene,
-                alamo_format::AlaAnimation& out_anim,
+                std::vector<ClipAnimation>& out_clips,
                 std::string&                out_error);
 
 // Walk the scene a second time and emit a human-readable diagnostic
