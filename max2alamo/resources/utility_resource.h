@@ -43,6 +43,9 @@
 #define IDC_NODE_ENABLE_COLLISION       3121
 #define IDC_NODE_HIDDEN                 3122
 #define IDC_NODE_ALT_DEC_STAY_HIDDEN    3123
+// Phase 8f: visibility propagation (copies hidden flag + visibility
+// controller from selected node(s) to all their descendants).
+#define IDC_NODE_PROPAGATE_VISIBILITY   3130
 
 // ---- Quick Selection Utility controls -------------------------------------
 

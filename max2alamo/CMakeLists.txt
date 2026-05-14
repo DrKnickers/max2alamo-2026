@@ -73,6 +73,7 @@ target_link_libraries(max2alamo PRIVATE
     IGame        # IGameScene / IGameNode / IGameMesh
     bmm          # BitmapInfo::Name (used when reading DXMaterial bitmaps)
     paramblk2    # IUtil / UtilityObj (Alamo Utility command-panel plugin)
+    Maxscrpt     # ExecuteMAXScriptScript (Phase 8f propagation button)
 )
 
 target_link_libraries(max2alamo PRIVATE alamo_format)
