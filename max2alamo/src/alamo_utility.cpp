@@ -1,5 +1,6 @@
 #include "alamo_utility.h"
 #include "alamo_proxy_helper.h"  // kAlamoProxyClassID, for Hidden/AltDec ungate
+#include "animation_settings_dlg.h"  // Phase 11b.2 backend
 
 #include "../resources/utility_resource.h"
 
@@ -10,6 +11,7 @@
 #include <utilapi.h>
 #include <plugapi.h>
 #include <custcont.h>   // ISpinnerControl, GetISpinner, SetupIntSpinner
+#include <notify.h>     // NOTIFY_FILE_POST_OPEN
 #include <maxscript/maxscript.h>             // ExecuteMAXScriptScript (Phase 8f propagation button)
 #include <maxscript/util/listener.h>
 
@@ -469,50 +471,8 @@ INT_PTR CALLBACK QuickSelectionDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARA
     return FALSE;
 }
 
-INT_PTR CALLBACK AnimationSettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    switch (msg) {
-    case WM_INITDIALOG: {
-        SetWindowLongPtr(hDlg, GWLP_USERDATA, lParam);
-        if (auto* util = reinterpret_cast<AlamoUtility*>(lParam)) {
-            util->m_hAnimSettings = hDlg;
-        }
-        // Seed the combo with the legacy "no clip authored" sentinel.
-        // The real clip store lands with the Phase 8 .ala writer.
-        SendDlgItemMessage(hDlg, IDC_ANIM_NAME_COMBO, CB_RESETCONTENT, 0, 0);
-        SendDlgItemMessage(hDlg, IDC_ANIM_NAME_COMBO, CB_ADDSTRING, 0,
-                           reinterpret_cast<LPARAM>(_T("-- none --")));
-        SendDlgItemMessage(hDlg, IDC_ANIM_NAME_COMBO, CB_SETCURSEL, 0, 0);
-
-        if (ISpinnerControl* s = SetupIntSpinner(hDlg, IDC_ANIM_START_SPIN,
-                                                 IDC_ANIM_START_EDIT, 0, 10000, 0)) {
-            ReleaseISpinner(s);
-        }
-        if (ISpinnerControl* s = SetupIntSpinner(hDlg, IDC_ANIM_END_SPIN,
-                                                 IDC_ANIM_END_EDIT, 0, 10000, 0)) {
-            ReleaseISpinner(s);
-        }
-        // The clip backend is Phase 8 work; everything past visual
-        // setup is intentionally inert here.
-        EnableCtrl(hDlg, IDC_ANIM_NAME_COMBO,       FALSE);
-        EnableCtrl(hDlg, IDC_ANIM_START_EDIT,       FALSE);
-        EnableCtrl(hDlg, IDC_ANIM_START_SPIN,       FALSE);
-        EnableCtrl(hDlg, IDC_ANIM_END_EDIT,         FALSE);
-        EnableCtrl(hDlg, IDC_ANIM_END_SPIN,         FALSE);
-        EnableCtrl(hDlg, IDC_ANIM_PREV,             FALSE);
-        EnableCtrl(hDlg, IDC_ANIM_ADD,              FALSE);
-        EnableCtrl(hDlg, IDC_ANIM_DEL,              FALSE);
-        EnableCtrl(hDlg, IDC_ANIM_NEXT,             FALSE);
-        EnableCtrl(hDlg, IDC_ANIM_DISPLAY_CURRENT,  FALSE);
-        EnableCtrl(hDlg, IDC_ANIM_DISPLAY_ALL,      FALSE);
-        return TRUE;
-    }
-    case WM_DESTROY:
-        if (auto* util = GetUtility(hDlg)) util->m_hAnimSettings = nullptr;
-        return TRUE;
-    }
-    return FALSE;
-}
+// AnimationSettingsDlgProc moved to animation_settings_dlg.cpp (Phase 11b.2).
+// The forward declaration in animation_settings_dlg.h is included at the top.
 
 // ---- ClassDesc ------------------------------------------------------------
 
@@ -543,6 +503,34 @@ ClassDesc* GetAlamoUtilityClassDesc() { return &g_alamo_utility_desc; }
 
 AlamoUtility::AlamoUtility() = default;
 
+namespace {
+
+// Phase 11b.2: file-open notification callback. Repopulates the
+// Animation Settings rollout's combo + spinners + animationRange
+// from the freshly-loaded scene's user props. Also clears state on
+// PRE_OPEN / SYSTEM_PRE_RESET so users don't see stale data during
+// transitions. (Spec Risk #4.)
+void OnFileSceneNotify(void* param, NotifyInfo* info)
+{
+    auto* util = static_cast<AlamoUtility*>(param);
+    if (!util || !util->m_hAnimSettings) return;
+    switch (info->intcode) {
+    case NOTIFY_FILE_POST_OPEN:
+        RefreshAnimationSettings(util->m_hAnimSettings);
+        break;
+    case NOTIFY_FILE_PRE_OPEN:
+    case NOTIFY_SYSTEM_PRE_RESET:
+        // Best-effort: blank the combo so the user doesn't see the old
+        // scene's clips during the transition. The next POST_OPEN /
+        // (post-reset implicit refresh on rollout re-init) will repaint.
+        SendDlgItemMessage(util->m_hAnimSettings, IDC_ANIM_NAME_COMBO,
+                           CB_RESETCONTENT, 0, 0);
+        break;
+    }
+}
+
+}  // namespace
+
 void AlamoUtility::BeginEditParams(Interface* ip, IUtil* /*iu*/)
 {
     m_ip = ip;
@@ -562,10 +550,21 @@ void AlamoUtility::BeginEditParams(Interface* ip, IUtil* /*iu*/)
                       AnimationSettingsDlgProc,
                       _T("Animation Settings"),
                       reinterpret_cast<LPARAM>(this));
+
+    // Phase 11b.2: subscribe to file-load notifications so the
+    // Animation Settings rollout repopulates after File -> Open and
+    // clears during file/scene transitions.
+    RegisterNotification(OnFileSceneNotify, this, NOTIFY_FILE_POST_OPEN);
+    RegisterNotification(OnFileSceneNotify, this, NOTIFY_FILE_PRE_OPEN);
+    RegisterNotification(OnFileSceneNotify, this, NOTIFY_SYSTEM_PRE_RESET);
 }
 
 void AlamoUtility::EndEditParams(Interface* ip, IUtil* /*iu*/)
 {
+    UnRegisterNotification(OnFileSceneNotify, this, NOTIFY_FILE_POST_OPEN);
+    UnRegisterNotification(OnFileSceneNotify, this, NOTIFY_FILE_PRE_OPEN);
+    UnRegisterNotification(OnFileSceneNotify, this, NOTIFY_SYSTEM_PRE_RESET);
+
     if (!ip) { m_ip = nullptr; return; }
     if (m_hNodeOptions)  ip->DeleteRollupPage(m_hNodeOptions);
     if (m_hQuickSelect)  ip->DeleteRollupPage(m_hQuickSelect);
