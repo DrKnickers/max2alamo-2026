@@ -122,7 +122,7 @@ The Utility-panel Animation Settings rollout drives multi-clip authoring + per-c
 
 1. **Open Max with an empty scene.** Open Utilities → More → Alamo Utility. Verify: Animation Settings rollout present; combo shows `-- none --`; all controls except Add disabled.
 2. **Click Add → type `WALK` → OK.** Verify: combo now shows `WALK`; Start spinner = 0; End spinner = `animationRange.end` (Max default 100); time-slider bounds = [0, 100]; MAXScript Listener `getUserProp rootNode "Alamo_Anim_Clips"` returns `"WALK"`; `Alamo_Anim_WALK_Start` = 0; `Alamo_Anim_WALK_End` = 100.
-3. **Edit End spinner to 30.** Verify: spinner shows 30; time-slider bounds = [0, 30]; `Alamo_Anim_WALK_End` = 30; Edit menu has one new undo entry "Edit Clip End Frame"; `Ctrl-Z` restores spinner to 100, time-slider to [0, 100], prop to 100.
+3. **Edit End spinner to 30.** Verify: spinner shows 30; time-slider bounds = [0, 30]; `Alamo_Anim_WALK_End` = 30; Edit menu has one new undo entry "Edit Clip End Frame"; `Ctrl-Z` restores spinner to 100, time-slider to [0, 100], prop to 100; then `Ctrl-Y` (redo) restores spinner to 30, time-slider to [0, 30], prop to 30 (Phase 11b.2.2: `NOTIFY_SCENE_UNDO` / `NOTIFY_SCENE_REDO` repaint the rollout).
 4. **Click Add → type `ATTACK` → OK.** Verify: combo selects `ATTACK`; Start=0, End=30 (current `animationRange.end`); `Alamo_Anim_Clips` = `"WALK|ATTACK"`.
 5. **Click `<<`.** Verify: combo flips to `WALK`; Start/End spinners load `WALK`'s stored 0 / 30; **time-slider scrubs to [0, 30]** (the user-requested combo-scrub-timeline behavior).
 6. **Click `>>`.** Verify: combo flips back to `ATTACK`; spinners load 0 / 30; time-slider scrubs.
