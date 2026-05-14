@@ -9,6 +9,7 @@ add_library(alamo_format STATIC
     src/shader_table.cpp
     src/skin_weights.cpp
     src/anim_clip_list.cpp
+    src/legacy_clip_scan.cpp
 )
 
 target_include_directories(alamo_format PUBLIC include)
