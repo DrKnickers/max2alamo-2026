@@ -240,6 +240,16 @@ int AloExport::DoExport(const TCHAR*  name,
         std::string log;
         log_material_diagnostics(i, log);
         log_scene_summary(scene, log);
+
+        // Phase 12: per-mesh walker diagnostics (shadow-volume closed-
+        // manifold violations are the first user). Each warning is one
+        // pre-formatted line; just terminate with a newline.
+        for (const auto& m : scene.meshes) {
+            for (const auto& w : m.warnings) {
+                log += w;
+                log += '\n';
+            }
+        }
         if (!emissions.empty()) {
             char header[128];
             std::snprintf(header, sizeof(header),

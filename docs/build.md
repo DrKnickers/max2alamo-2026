@@ -156,3 +156,24 @@ Fixtures used (local-only, under `tests/corpus/legacy/ThrREv/Ascendancy/`): `Sup
 8. **Cross-tool round-trip:** open one of the emitted `.ala` files in Mike Lankamp's `alamo2max.ms` MAXScript importer (any supported Max version). Verify: no MAXScript Listener errors; scene reconstructs with the expected `nFrames` for that clip.
 
 **Negative tripwire H** (manual sanity check during development): in `alamo_format/src/legacy_clip_scan.cpp`, flip one byte of `kLegacyUtilityClassIdBytes` (e.g. `0x90` → `0x91`). Rebuild. Re-open `CIS_SBD.max`. Expected: Listener silent (no "imported N clips" line); rollout combo shows `-- none --`. Confirms the importer is keyed off the exact recovered Class_ID and a regression mutating it would surface immediately.
+
+### Tier 4 — Shadow-volume closed-volume validator (Phase 12)
+
+Validates that meshes flagged as shadow-volume (via shader `MeshShadowVolume.fx` / `RSkinShadowVolume.fx`, or the legacy `_ALAMO_SHADOW_VOLUME = 1` int user-prop) form a closed 2-manifold. Open meshes get a one-line warning per offending mesh in `.export.log` and the MAXScript Listener; export is **not** aborted. Matches the legacy PG exporter's warn-not-abort behaviour. Catch2 covers the pure-C++ topology check (13 cases under `alamo_format/tests/shadow_volume_check_test.cpp`); the steps below cover the GUI export path that the batch harness doesn't exercise.
+
+1. **Open Max** (any version with the current `.dle` installed) → Customize → Open MAXScript Listener.
+2. **In the Listener, paste and Shift+Enter (single line):**
+   ```
+   resetMaxFile #noPrompt; b = Box name:"GUIClosedBox" width:10 length:10 height:10 pos:[0,0,0]; setUserProp b "Alamo_Shader_Name" "MeshShadowVolume.fx"
+   ```
+3. **File → Export → Alamo Object (.alo)**, save to a fresh path (e.g. `build/maxbatch/gui_phase12_closed.alo`). Verify: dialog reports "Export complete"; Listener has NO `max2alamo: WARNING: shadow-volume` line; the file's sibling `.export.log` contains no `WARNING: shadow-volume` line. **(Closed mesh → no warning.)**
+4. **In the Listener, paste:**
+   ```
+   resetMaxFile #noPrompt; b = Box name:"GUIOpenBox" width:10 length:10 height:10 pos:[0,0,0]; convertToPoly b; polyOp.deleteFaces b #(1); setUserProp b "Alamo_Shader_Name" "MeshShadowVolume.fx"
+   ```
+5. **File → Export → Alamo Object (.alo)** to `build/maxbatch/gui_phase12_open.alo`. Verify: dialog reports "Export complete" (export NOT aborted); Listener shows `max2alamo: WARNING: shadow-volume mesh 'GUIOpenBox' has <N> non-manifold edge(s); the engine's stencil shadow pass will render incorrectly.`; the `.export.log` contains the same line. **(Open mesh → warning, but export succeeds.)**
+6. **Optional — user-prop trigger path:** repeat step 4 but without the shader override; instead append `; setUserProp b "_ALAMO_SHADOW_VOLUME" 1`. Export; verify the warning still fires (the legacy MaxScript hook is honoured as a secondary trigger).
+
+**Negative tripwire J** (manual sanity check during development): in `alamo_format/src/shadow_volume_check.cpp`, replace the `kCount != 2` filter with `< 1`. Rebuild. Re-run step 5. Expected: the warning no longer fires on the open box (the validator now incorrectly considers a single-boundary edge as closed). Confirms the topology check is keyed off the exact edge-incidence rule.
+
+**Corpus baseline** (informational, no manual action): `python scripts/check_shadow_volume_corpus.py` over EaW + FoC corpus reports ~75% pass rate (2,392 closed / 3,168 shadow submeshes across 4,132 vanilla `.alo` files). The ~25% "open" remainder is vanilla authoring noise the legacy PG exporter would have warned on too — meshes with 1–4 non-manifold edges over hundreds of triangles. The threshold is set to 75% so a regression that makes the validator over-strict (rate drops) would fire the check.
