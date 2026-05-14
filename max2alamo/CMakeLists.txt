@@ -44,6 +44,7 @@ add_library(max2alamo SHARED
     src/alamo_utility.cpp
     src/animation_settings_dlg.cpp
     src/alamo_proxy_helper.cpp
+    src/legacy_clip_importer.cpp
     resources/max2alamo.def
     resources/max2alamo.rc
     resources/utility_dialogs.rc

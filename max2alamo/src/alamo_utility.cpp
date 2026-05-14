@@ -1,6 +1,7 @@
 #include "alamo_utility.h"
 #include "alamo_proxy_helper.h"  // kAlamoProxyClassID, for Hidden/AltDec ungate
 #include "animation_settings_dlg.h"  // Phase 11b.2 backend
+#include "legacy_clip_importer.h"    // Phase 11c legacy .max clip-data reader
 
 #include "../resources/utility_resource.h"
 
@@ -523,6 +524,14 @@ void OnFileSceneNotify(void* param, NotifyInfo* info)
     if (!util || !util->m_hAnimSettings) return;
     switch (info->intcode) {
     case NOTIFY_FILE_POST_OPEN:
+        // Phase 11c: translate any legacy AlamoUtility appData records
+        // present in the just-loaded .max file into Phase 11b's
+        // user-prop convention. No-op when rootNode already has
+        // Alamo_Anim_Clips (modern authoring wins). RefreshAnimationSettings
+        // then picks up the imported clips automatically.
+        MaybeImportLegacyClipsFromCurrentScene(util->m_ip);
+        RefreshAnimationSettings(util->m_hAnimSettings);
+        break;
     case NOTIFY_SCENE_UNDO:
     case NOTIFY_SCENE_REDO:
         RefreshAnimationSettings(util->m_hAnimSettings);
