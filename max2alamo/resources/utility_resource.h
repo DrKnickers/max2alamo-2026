@@ -72,3 +72,9 @@
 #define IDC_ANIM_NEXT                   3308
 #define IDC_ANIM_DISPLAY_CURRENT        3309
 #define IDC_ANIM_DISPLAY_ALL            3310
+
+// ---- Clip-name prompt (Phase 11b.2 modal sub-dialog) ----------------------
+
+#define IDD_ALAMO_CLIP_NAME_PROMPT      3400
+#define IDC_CLIP_NAME_EDIT              3401
+#define IDC_CLIP_NAME_ERROR             3402

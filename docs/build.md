@@ -115,3 +115,25 @@ Things batch mode can't verify. Run these for releases or whenever a PR's behavi
 - [ ] **Mike Lankamp's `alamo2max` MAXScript importer.** Open the exported `.alo` in his importer (any supported Max version). No errors in the MAXScript listener; scene reconstructs with the expected mesh / bone / material set.
 - [ ] **AloViewer.** Drag the exported `.alo` onto AloViewer. Renders without crash; geometry has expected shape and orientation; materials visible (textured surfaces show texture, not solid colour).
 - [ ] **In-game (EaW / FoC).** Drop the `.alo` into a mod folder and load the relevant unit. Loads without crash; renders correctly; for animation work, animations play; hardpoints fire from expected positions.
+
+### Tier 4 — Animation Settings rollout (Phase 11b.2)
+
+The Utility-panel Animation Settings rollout drives multi-clip authoring + per-clip `.ala` emission. Catch2 covers the pure-C++ logic (parsing, validation, prev/next, range union — 43 cases under `alamo_format/tests/anim_clip_list_test.cpp`); these manual steps cover the Win32 dispatch, undo semantics, and animationRange propagation that no headless harness can exercise. Run them in 3ds Max 2026 after rebuilding the `.dle`.
+
+1. **Open Max with an empty scene.** Open Utilities → More → Alamo Utility. Verify: Animation Settings rollout present; combo shows `-- none --`; all controls except Add disabled.
+2. **Click Add → type `WALK` → OK.** Verify: combo now shows `WALK`; Start spinner = 0; End spinner = `animationRange.end` (Max default 100); time-slider bounds = [0, 100]; MAXScript Listener `getUserProp rootNode "Alamo_Anim_Clips"` returns `"WALK"`; `Alamo_Anim_WALK_Start` = 0; `Alamo_Anim_WALK_End` = 100.
+3. **Edit End spinner to 30.** Verify: spinner shows 30; time-slider bounds = [0, 30]; `Alamo_Anim_WALK_End` = 30; Edit menu has one new undo entry "Edit Clip End Frame"; `Ctrl-Z` restores spinner to 100, time-slider to [0, 100], prop to 100.
+4. **Click Add → type `ATTACK` → OK.** Verify: combo selects `ATTACK`; Start=0, End=30 (current `animationRange.end`); `Alamo_Anim_Clips` = `"WALK|ATTACK"`.
+5. **Click `<<`.** Verify: combo flips to `WALK`; Start/End spinners load `WALK`'s stored 0 / 30; **time-slider scrubs to [0, 30]** (the user-requested combo-scrub-timeline behavior).
+6. **Click `>>`.** Verify: combo flips back to `ATTACK`; spinners load 0 / 30; time-slider scrubs.
+7. **Manually drag the time-slider's right edge to frame 60.** Verify: `animationRange` is now [0, 60] but `Alamo_Anim_ATTACK_End` is still 30 (editor model: manual scrubs are preview-only, don't mutate clip data).
+8. **Click `Display Current`.** Verify: time-slider snaps back to [0, 30] (the stored ATTACK range).
+9. **Click `Display All`.** Verify: time-slider = [0, 30] (the union of `WALK` [0, 30] + `ATTACK` [0, 30]). Edit ATTACK's End to 90 and click Display All again → time-slider = [0, 90].
+10. **Try Add → type `walk` (lowercase) → OK.** Verify: inline validator error appears ("Clip names use uppercase A-Z, digits 0-9, and underscores"); the prompt stays open; combo unchanged.
+11. **Try Add → type `WALK` (duplicate) → OK.** Verify: inline error "A clip with that name already exists"; prompt stays open.
+12. **Click `Del` with `ATTACK` selected.** Verify: confirmation `MessageBox` ("Delete animation clip \"ATTACK\"?"); click Yes; combo selects `WALK` (the previous clip); `Alamo_Anim_Clips` = `"WALK"`; `Alamo_Anim_ATTACK_Start` = -1 (soft-delete sentinel — Phase 10b walker contract treats this as absent identically to true removal).
+13. **File → Save the scene to a temp `.max`. File → New (empty scene). File → Open the temp `.max`.** Verify: rollout combo repopulates with `WALK` after the open (the `NOTIFY_FILE_POST_OPEN` hook ran); spinners load 0 / 30; time-slider scrubs to [0, 30].
+14. **Load a single-clip back-compat scene** (un-suffixed `Alamo_Anim_Start` / `_End` / `_Name` only, no `Alamo_Anim_Clips`). Verify: combo shows the un-suffixed clip name; spinners load its range. Click `Add` → upgrades to multi-clip (sets `Alamo_Anim_Clips`; un-suffixed props remain intact — Phase 11b.1's precedence rule shadows them, which is the right behavior).
+15. **Export the scene from step 9.** Verify: per-clip `.ala` siblings emit (`<basename>_WALK.ala`, `<basename>_ATTACK.ala`); `.export.log` shows per-clip lines (Phase 11b.1's coverage). Round-trip the `.ala` files through Mike Lankamp's importer (Tier 4 cross-tool above).
+
+**Negative tripwire G** (manual sanity check during development): in `max2alamo/src/animation_settings_dlg.cpp::ApplySelectedClip`, comment out the `SetAnimRangeAndNotify(util->m_ip, start, end)` line. Rebuild. Run step 5 above. Expected: spinners flip to `WALK`'s range but time-slider does NOT scrub. Confirms the smoke test would catch a regression of the user-requested "combo selection scrubs timeline" behavior.
