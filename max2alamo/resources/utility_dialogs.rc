@@ -127,3 +127,27 @@ BEGIN
     PUSHBUTTON      "Display All",     IDC_ANIM_DISPLAY_ALL,
                     8, 90, 92, 12
 END
+
+// ---- Clip-name prompt (Phase 11b.2 modal sub-dialog) ----------------------
+//
+// Shown by the Animation Settings rollout's Add button. The caller
+// passes the existing AnimClipList for uniqueness checking and a
+// fixed-size char buffer for the result via lParam (PromptContext*).
+
+IDD_ALAMO_CLIP_NAME_PROMPT DIALOGEX 0, 0, 180, 80
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Add Animation Clip"
+FONT 8, "Ms Shell Dlg", 400, 0, 0x1
+BEGIN
+    LTEXT           "Clip name:", IDC_STATIC,
+                    7, 7, 60, 10
+    EDITTEXT        IDC_CLIP_NAME_EDIT,
+                    7, 19, 166, 12, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Use uppercase A-Z, digits 0-9, and underscores.",
+                    IDC_STATIC,
+                    7, 35, 166, 10
+    LTEXT           "", IDC_CLIP_NAME_ERROR,
+                    7, 47, 166, 10
+    DEFPUSHBUTTON   "OK",     IDOK,     66, 60, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL,123, 60, 50, 14
+END
