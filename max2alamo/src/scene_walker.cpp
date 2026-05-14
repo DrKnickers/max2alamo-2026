@@ -1307,8 +1307,16 @@ void walk_animation(IGameScene* igame,
     INode* root = max_interface->GetRootNode();
     if (!root) return;
 
-    const int start = read_node_user_prop_int(root, kPropAnimStart, 0);
-    const int end   = read_node_user_prop_int(root, kPropAnimEnd,   0);
+    // Phase 10b: distinguish "prop absent" from "prop explicitly = 0" by
+    // using a sentinel default of -1. Without this, `Alamo_Anim_Start=0,
+    // End=0` (absent props) would be treated as a single-frame clip
+    // (post-Phase-8f single-frame fix) and emit a spurious 1-frame .ala
+    // for every static-only scene. Real authoring must set both props
+    // explicitly (>= 0).
+    const int start = read_node_user_prop_int(root, kPropAnimStart, -1);
+    const int end   = read_node_user_prop_int(root, kPropAnimEnd,   -1);
+    if (start < 0 || end < 0) return;  // no clip authored -> no .ala
+
     // Phase 8f: allow end == start (single-frame clip, n_frames=1).
     // The previous gate `end <= start` rejected 1-frame clips, which
     // are a legitimate edge case (e.g. a one-pose animation).
