@@ -156,10 +156,30 @@ int GetAnimRangeEndFrames(Interface* ip)
 
 // ---- Clip-list I/O -------------------------------------------------------
 
+// Load the clip list as the user sees it in the rollout. Primary path
+// reads `Alamo_Anim_Clips`. Back-compat path (Phase 11b.1's un-suffixed
+// single-clip convention) kicks in when `Alamo_Anim_Clips` is absent
+// but un-suffixed `Alamo_Anim_Start/_End` (+ optional `Alamo_Anim_Name`)
+// are set -- we synthesize a one-element list using `Alamo_Anim_Name`
+// (or a generic "clip" fallback when name is absent) so the rollout
+// surfaces the clip the walker would emit. Mirrors the walker's
+// precedence rule from scene_walker.cpp::walk_animations.
 alamo_format::AnimClipList LoadClipList(AlamoUtility* util)
 {
     INode* root = GetRootNode(util);
-    return alamo_format::parse_clip_list(ReadStringProp(root, "Alamo_Anim_Clips"));
+    auto list = alamo_format::parse_clip_list(ReadStringProp(root, "Alamo_Anim_Clips"));
+    if (!list.names.empty()) return list;
+
+    // Multi-clip absent -- check for un-suffixed back-compat.
+    if (!root) return list;
+    int start = ReadIntProp(root, "Alamo_Anim_Start", -1);
+    int end   = ReadIntProp(root, "Alamo_Anim_End",   -1);
+    if (start < 0 || end < 0) return list;  // no back-compat either
+
+    std::string name = ReadStringProp(root, "Alamo_Anim_Name");
+    if (name.empty()) name = "clip";  // generic fallback
+    list.names.push_back(std::move(name));
+    return list;
 }
 
 void SaveClipList(AlamoUtility* util, const alamo_format::AnimClipList& clips)
@@ -287,6 +307,14 @@ void UpdateControlEnableState(HWND hDlg, std::size_t clip_count)
 // into the spinners and scrub animationRange to match. The "selecting
 // a clip adjusts the keyframe range to that clip" behavior the user
 // called out explicitly.
+// True iff the rootNode is in Phase 11b.1 back-compat mode: no
+// Alamo_Anim_Clips, only un-suffixed Alamo_Anim_Start/_End/_Name.
+bool IsBackCompatMode(INode* root)
+{
+    if (!root) return false;
+    return ReadStringProp(root, "Alamo_Anim_Clips").empty();
+}
+
 void ApplySelectedClip(HWND hDlg, AlamoUtility* util)
 {
     auto clips = LoadClipList(util);
@@ -294,8 +322,14 @@ void ApplySelectedClip(HWND hDlg, AlamoUtility* util)
     if (name.empty()) return;
     INode* root = GetRootNode(util);
     if (!root) return;
-    int start = ReadIntProp(root, alamo_format::clip_start_prop_key(name), 0);
-    int end   = ReadIntProp(root, alamo_format::clip_end_prop_key(name),   0);
+    int start, end;
+    if (IsBackCompatMode(root)) {
+        start = ReadIntProp(root, "Alamo_Anim_Start", 0);
+        end   = ReadIntProp(root, "Alamo_Anim_End",   0);
+    } else {
+        start = ReadIntProp(root, alamo_format::clip_start_prop_key(name), 0);
+        end   = ReadIntProp(root, alamo_format::clip_end_prop_key(name),   0);
+    }
     SetSpinnerValue(hDlg, IDC_ANIM_START_SPIN, start);
     SetSpinnerValue(hDlg, IDC_ANIM_END_SPIN,   end);
     SetAnimRangeAndNotify(util->m_ip, start, end);
@@ -328,8 +362,18 @@ void HandleSpinnerCommit(HWND hDlg, AlamoUtility* util, int spin_id)
         ? _T("Edit Clip Start Frame")
         : _T("Edit Clip End Frame");
     theHold.Begin();
-    WriteIntProp(root, alamo_format::clip_start_prop_key(name), start);
-    WriteIntProp(root, alamo_format::clip_end_prop_key(name),   end);
+    if (IsBackCompatMode(root)) {
+        // Back-compat scene: write to un-suffixed Alamo_Anim_Start/_End
+        // so the walker's back-compat path sees the new values. (If we
+        // wrote suffixed keys here, Alamo_Anim_Clips is empty so the
+        // walker's precedence rule routes through un-suffixed and the
+        // edit would have no export effect.)
+        WriteIntProp(root, "Alamo_Anim_Start", start);
+        WriteIntProp(root, "Alamo_Anim_End",   end);
+    } else {
+        WriteIntProp(root, alamo_format::clip_start_prop_key(name), start);
+        WriteIntProp(root, alamo_format::clip_end_prop_key(name),   end);
+    }
     theHold.Accept(label);
 
     SetAnimRangeAndNotify(util->m_ip, start, end);
@@ -522,13 +566,49 @@ INT_PTR CALLBACK AnimationSettingsDlgProc(HWND hDlg, UINT msg,
         return FALSE;
     }
 
-    // Spinner commit fires when the user releases the spinner buttons
-    // or presses Enter / Tab out of the CustEdit. Ignore CC_SPINNER_CHANGE
-    // (continuous drag) to keep undo entries to one per user action.
-    case CC_SPINNER_BUTTONUP: {
+    // Spinner commit. Per Max SDK custcont.h:
+    //   CC_SPINNER_CHANGE:
+    //     LOWORD(wParam) = ctrlID
+    //     HIWORD(wParam) = TRUE if user is dragging the spinner
+    //                      interactively; FALSE on commit (typed
+    //                      Enter/Tab, or click on up/down button).
+    //     lParam         = ISpinnerControl*
+    //   CC_SPINNER_BUTTONUP:
+    //     LOWORD(wParam) = ctrlID
+    //     HIWORD(wParam) = TRUE on normal release; FALSE if user
+    //                      cancelled the spinner drag.
+    //
+    // We commit on CC_SPINNER_CHANGE/HIWORD=FALSE (text commits +
+    // single-click increments) AND on CC_SPINNER_BUTTONUP/HIWORD=TRUE
+    // (drag-end). Mid-drag CC_SPINNER_CHANGE/HIWORD=TRUE intermediates
+    // are skipped so each user action is one ctrl-Z entry.
+    //
+    // (Bug history: 11b.2 ship initially listened only to
+    // CC_SPINNER_BUTTONUP -- missed the typed-Tab-out commit path.
+    // A first fix used `static_cast<BOOL>(lParam)` for the interactive
+    // flag, but lParam is the ISpinnerControl* (always non-null) so
+    // every message was treated as interactive and skipped.)
+    case CC_SPINNER_CHANGE: {
         auto* util = GetUtility(hDlg);
         if (!util) return FALSE;
-        const int id = LOWORD(wParam);
+        const int  id          = LOWORD(wParam);
+        const BOOL interactive = static_cast<BOOL>(HIWORD(wParam));
+        if (interactive) return FALSE;  // mid-drag intermediate, skip
+        if (id == IDC_ANIM_START_SPIN || id == IDC_ANIM_END_SPIN) {
+            HandleSpinnerCommit(hDlg, util, id);
+            return TRUE;
+        }
+        return FALSE;
+    }
+    case CC_SPINNER_BUTTONUP: {
+        // Drag-end commit. HIWORD(wParam) = FALSE means the user
+        // cancelled (right-clicked during drag); in that case the
+        // spinner restores its pre-drag value and we don't write.
+        auto* util = GetUtility(hDlg);
+        if (!util) return FALSE;
+        const int  id        = LOWORD(wParam);
+        const BOOL completed = static_cast<BOOL>(HIWORD(wParam));
+        if (!completed) return FALSE;  // user cancelled drag
         if (id == IDC_ANIM_START_SPIN || id == IDC_ANIM_END_SPIN) {
             HandleSpinnerCommit(hDlg, util, id);
             return TRUE;
