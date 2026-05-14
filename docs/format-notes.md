@@ -485,6 +485,21 @@ Two different encodings, both common in vanilla content:
 
 For v1, **emit FoC format** by default — it's smaller, both engines support it, and it matches what vanilla FoC ships. Add EaW format as an option if needed.
 
+### Multi-clip filename convention — RESOLVED (Phase 11b.1)
+
+Per-asset animations ship as **one `.ala` file per clip**, named `<basename>_<CLIPNAME>.ala` as a sibling of `<basename>.alo`. The clip name lives only in the filename — the `.ala` chunk format has no on-disk clip-name field. Validated against three sources, all converging:
+
+- **Vanilla EaW + FoC corpus** (2863 files surveyed in Phase 11a): every `.ala` follows `<UNIT>_<CLIP>.ALA` or `<UNIT>_<CLIP>_<INDEX>.ALA` (variant takes). Infantry units catalogue 20–56 clips each; `EI_TROOPER` peaks at 56.
+- **Mike Lankamp's `alamo2max.ms`** importer auto-discovers via the glob `GetFiles((path) + basename + "_*.ALA")` (line 1535) and extracts the clip name by stripping the `<basename>_` prefix and `.ala` suffix (line 1557).
+- **Gaukler's Blender plugin** treats each `.ala` as a single Blender action named after the filename; users batch-export by re-running the operator per clip.
+
+Our walker authors the clip list on the scene root via two user-prop conventions:
+
+- **Multi-clip path:** `Alamo_Anim_Clips = "WALK|ATTACK|IDLE"` (pipe-delimited list) plus per-clip `Alamo_Anim_<NAME>_Start` / `_End` ranges. Each declared clip emits a `<basename>_<NAME>.ala` sibling. Malformed clips (missing `_Start`/`_End`, inverted range) are skipped — the other clips still emit (partial-export policy).
+- **Single-clip back-compat:** un-suffixed `Alamo_Anim_Start` / `_End` / `_Name` emits a bare `<basename>.ala` (Phase 8b/c/d shape).
+
+When both conventions are authored on the same scene, **the multi-clip path wins deterministically** — the un-suffixed un-prefixed `Alamo_Anim_Start/_End/_Name` props are ignored, no bare `<basename>.ala` emits.
+
 ---
 
 ## Open questions

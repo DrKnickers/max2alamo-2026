@@ -1293,34 +1293,57 @@ Quat extract_rotation_quat(const Matrix3& m3_in)
 const TCHAR* kPropAnimStart = _T("Alamo_Anim_Start");
 const TCHAR* kPropAnimEnd   = _T("Alamo_Anim_End");
 const TCHAR* kPropAnimName  = _T("Alamo_Anim_Name");
+// Phase 11b: pipe-delimited clip-name list. Each `<NAME>` pairs with
+// `Alamo_Anim_<NAME>_Start` / `_End` for that clip's frame range.
+const TCHAR* kPropAnimClips = _T("Alamo_Anim_Clips");
 
-void walk_animation(IGameScene* igame,
-                    Interface* max_interface,
-                    const std::unordered_map<INode*, std::uint32_t>& bone_map,
-                    const std::unordered_map<INode*, std::uint32_t>& visibility_map,
-                    const alamo_format::ExportScene& scene,
-                    alamo_format::AlaAnimation& out_anim)
+// Split a pipe-delimited clip-name list. Empty fields and whitespace-
+// only fields are dropped (the user wrote "FOO||BAR" or "FOO| |BAR").
+// Clip-name validation (uppercase/digits/underscore) is enforced at
+// authoring time in the Utility panel; the walker is permissive here
+// to avoid blocking a partial export on a single bad name.
+std::vector<std::string> split_clip_names(const std::string& list)
+{
+    std::vector<std::string> out;
+    std::string cur;
+    for (char c : list) {
+        if (c == '|') {
+            // Trim ASCII whitespace.
+            std::size_t b = 0, e = cur.size();
+            while (b < e && (cur[b] == ' ' || cur[b] == '\t')) ++b;
+            while (e > b && (cur[e-1] == ' ' || cur[e-1] == '\t')) --e;
+            if (e > b) out.emplace_back(cur.substr(b, e - b));
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
+    }
+    std::size_t b = 0, e = cur.size();
+    while (b < e && (cur[b] == ' ' || cur[b] == '\t')) ++b;
+    while (e > b && (cur[e-1] == ' ' || cur[e-1] == '\t')) --e;
+    if (e > b) out.emplace_back(cur.substr(b, e - b));
+    return out;
+}
+
+// Inner per-clip sampler. Fills `out_anim` for one (start, end) range
+// using the same bone-track / pool / visibility logic as the original
+// Phase 8 single-clip path -- only the time range and pool sizes vary
+// across clips. `start <= end` is the caller's responsibility (already
+// validated by walk_animations); we still defensively short-circuit on
+// invalid ranges so unit-test fuzzers can't drive a pool-size overflow.
+void sample_clip_animation(IGameScene* igame,
+                           Interface* max_interface,
+                           const std::unordered_map<INode*, std::uint32_t>& bone_map,
+                           const std::unordered_map<INode*, std::uint32_t>& visibility_map,
+                           const alamo_format::ExportScene& scene,
+                           int start,
+                           int end,
+                           alamo_format::AlaAnimation& out_anim)
 {
     out_anim = alamo_format::AlaAnimation{};
 
     if (!max_interface || !igame) return;
-    INode* root = max_interface->GetRootNode();
-    if (!root) return;
-
-    // Phase 10b: distinguish "prop absent" from "prop explicitly = 0" by
-    // using a sentinel default of -1. Without this, `Alamo_Anim_Start=0,
-    // End=0` (absent props) would be treated as a single-frame clip
-    // (post-Phase-8f single-frame fix) and emit a spurious 1-frame .ala
-    // for every static-only scene. Real authoring must set both props
-    // explicitly (>= 0).
-    const int start = read_node_user_prop_int(root, kPropAnimStart, -1);
-    const int end   = read_node_user_prop_int(root, kPropAnimEnd,   -1);
-    if (start < 0 || end < 0) return;  // no clip authored -> no .ala
-
-    // Phase 8f: allow end == start (single-frame clip, n_frames=1).
-    // The previous gate `end <= start` rejected 1-frame clips, which
-    // are a legitimate edge case (e.g. a one-pose animation).
-    if (end < start) return;  // truly invalid range -> no .ala
+    if (start < 0 || end < 0 || end < start) return;
 
     const int n_frames = end - start + 1;
 
@@ -1540,15 +1563,73 @@ void walk_animation(IGameScene* igame,
     }
 }
 
+// Phase 11b: read clip metadata from the scene-root node and dispatch
+// per-clip sampling. Multi-clip path (Alamo_Anim_Clips set) wins over
+// the un-suffixed single-clip path when both are authored; only the
+// declared multi-clip list is sampled. Empty `out_clips` on return =
+// no .ala emission (Phase 10b regression guard preserved).
+void walk_animations(IGameScene* igame,
+                     Interface* max_interface,
+                     const std::unordered_map<INode*, std::uint32_t>& bone_map,
+                     const std::unordered_map<INode*, std::uint32_t>& visibility_map,
+                     const alamo_format::ExportScene& scene,
+                     std::vector<ClipAnimation>& out_clips)
+{
+    out_clips.clear();
+    if (!max_interface || !igame) return;
+    INode* root = max_interface->GetRootNode();
+    if (!root) return;
+
+    const std::string clips_list = read_node_user_prop(root, kPropAnimClips);
+    if (!clips_list.empty()) {
+        // Multi-clip path. For each declared clip, read per-clip
+        // _Start / _End user props and sample the range. Per-clip
+        // failures (missing _Start or _End, or invalid range) skip
+        // that clip; other clips still emit (partial-export policy
+        // confirmed in 11a wrap, user 2026-05-13).
+        const auto names = split_clip_names(clips_list);
+        out_clips.reserve(names.size());
+        for (const auto& name : names) {
+            // Build the per-clip prop keys. TCHAR is wchar_t under
+            // /D UNICODE; assemble in wide.
+            std::wstring wname(name.begin(), name.end());
+            const std::wstring k_start = L"Alamo_Anim_" + wname + L"_Start";
+            const std::wstring k_end   = L"Alamo_Anim_" + wname + L"_End";
+            const int start = read_node_user_prop_int(root, k_start.c_str(), -1);
+            const int end   = read_node_user_prop_int(root, k_end.c_str(),   -1);
+            if (start < 0 || end < 0 || end < start) continue;  // skip invalid clip
+            ClipAnimation clip;
+            clip.name = name;
+            sample_clip_animation(igame, max_interface, bone_map, visibility_map,
+                                  scene, start, end, clip.anim);
+            out_clips.push_back(std::move(clip));
+        }
+        return;
+    }
+
+    // Single-clip un-suffixed back-compat path (Phase 8b/c/d shape).
+    // Phase 10b sentinel (-1) distinguishes "prop absent" from "prop
+    // explicitly = 0" so a static scene without authoring stays silent.
+    const int start = read_node_user_prop_int(root, kPropAnimStart, -1);
+    const int end   = read_node_user_prop_int(root, kPropAnimEnd,   -1);
+    if (start < 0 || end < 0 || end < start) return;
+
+    ClipAnimation clip;
+    clip.name.clear();  // empty -> exporter writes bare <basename>.ala
+    sample_clip_animation(igame, max_interface, bone_map, visibility_map,
+                          scene, start, end, clip.anim);
+    out_clips.push_back(std::move(clip));
+}
+
 // ---- Main entry points ----------------------------------------------------
 
 bool walk_scene(Interface*                  max_interface,
                 alamo_format::ExportScene&  out_scene,
-                alamo_format::AlaAnimation& out_anim,
+                std::vector<ClipAnimation>& out_clips,
                 std::string&                out_error)
 {
     out_scene = alamo_format::ExportScene::with_root_bone();
-    out_anim  = alamo_format::AlaAnimation{};
+    out_clips.clear();
     out_error.clear();
 
     IGameScene* igame = GetIGameInterface();
@@ -1605,12 +1686,14 @@ bool walk_scene(Interface*                  max_interface,
     // Standard > Alamo Proxy.
     walk_proxies(igame, out_scene, visibility_map);
 
-    // Pass 5 (Phase 8b/8c/8d): animation. Samples real Max bones +
-    // helpers-as-bones in bone_map for rotation/translation tracks, and
-    // every bone in visibility_map for the per-frame visibility track
-    // (0x1007). If no clip range authored, out_anim stays default-
-    // constructed (caller skips .ala write).
-    walk_animation(igame, max_interface, bone_map, visibility_map, out_scene, out_anim);
+    // Pass 5 (Phase 8b/8c/8d, extended in 11b): animation. Samples
+    // real Max bones + helpers-as-bones in bone_map for rotation/
+    // translation tracks, and every bone in visibility_map for the
+    // per-frame visibility track (0x1007). Reads clip metadata
+    // (Alamo_Anim_Clips for multi-clip or Alamo_Anim_Start/_End/_Name
+    // for single-clip back-compat) from the scene root. If no clip
+    // authored, out_clips stays empty (caller skips .ala write).
+    walk_animations(igame, max_interface, bone_map, visibility_map, out_scene, out_clips);
 
     igame->ReleaseIGame();
     return true;
