@@ -64,3 +64,23 @@ A non-100% pass rate means the format library has a bug — file an issue with t
 
 - `.ala` (animation) files live in the same `models.meg` archives. Use `-Pattern *.ala` to extract them.
 - Third-party mod `.meg` files may use Format 2 or 3, or reference encrypted entries via `MegaFiles.xml` precedence rules. Out of scope for v1.
+
+## Legacy `.max` compatibility fixtures (Phase 10)
+
+The legacy max2alamo.dle compatibility regression tests (`test_legacy_*`) require source `.max` files from the original (Max 9-era) Petroglyph plugin toolchain. These ride alongside the vanilla `.alo` corpus under `tests/corpus/legacy/`:
+
+```
+tests/corpus/legacy/
+└── ThrREv/
+    └── Ascendancy/
+        ├── Super Battle Droid/CIS_SBD.max
+        ├── Snowtrooper/EI_SNOWTROOPER.max
+        ├── MC80/RV_MonCalCruiser_D_export4.max
+        └── IFTX/EV_IFTX_D.max
+```
+
+These are not committed (mod IP). Each developer who wants to run the legacy regression tests copies them from a ThrREv: Ascendancy mod-tools distribution (or any equivalent legacy max2alamo.dle-authored .max files) to the path layout above.
+
+The regression tests run in **loose mode** under `validate_alo.py` because legacy artist-authored content occasionally has degenerate vertex-tangent geometry (e.g. tangent ~ normal at UV seams or zero-area UV triangles) that the strict mode rejects. Loose mode is the same setting `scripts/sweep_corpus_validator.py` uses for the vanilla EaW/FoC corpus — calibrated to real-world content rather than synthetic test scenes.
+
+If your fixtures aren't present, the corresponding `test_legacy_*` tests fail with a clear "fixture missing" message and a pointer back to this doc.
