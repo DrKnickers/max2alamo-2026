@@ -10,10 +10,12 @@
 #include <Max.h>
 #include <maxapi.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <vector>
 
 namespace max2alamo {
 
@@ -109,9 +111,9 @@ int AloExport::DoExport(const TCHAR*  name,
 
     // 1. Walk the scene.
     alamo_format::ExportScene scene;
-    alamo_format::AlaAnimation anim;
+    std::vector<ClipAnimation> clips;
     std::string walker_err;
-    if (!walk_scene(i, scene, anim, walker_err)) {
+    if (!walk_scene(i, scene, clips, walker_err)) {
         std::wstring wmsg(walker_err.begin(), walker_err.end());
         report((std::wstring(L"Scene walk failed:\n\n") + wmsg).c_str(), MB_ICONERROR);
         return IMPEXP_FAIL;
@@ -156,48 +158,79 @@ int AloExport::DoExport(const TCHAR*  name,
         return IMPEXP_FAIL;
     }
 
-    // 4.25 Phase 8b: write a sibling .ala when the scene has authored
-    // animation (Alamo_Anim_Start/End on the scene-root yielded at
-    // least one bone with a rotation track). Best-effort -- if the
-    // typed pipeline throws, log it and continue rather than failing
-    // the .alo export the user already paid for.
-    bool wrote_ala = false;
-    std::size_t ala_bytes_written = 0;
-    {
-        bool has_anim_track = false;
-        for (const auto& b : anim.bones) {
+    // 4.25 Phase 8b / Phase 11b: write one sibling .ala per authored
+    // clip. Filename pattern:
+    //   - Multi-clip path (`clip.name` non-empty): <basename>_<NAME>.ala
+    //   - Single-clip back-compat (`clip.name` empty):       <basename>.ala
+    // Best-effort -- if the typed pipeline throws on one clip, log it
+    // and continue with the rest rather than failing the .alo export
+    // the user already paid for (partial-export policy, 11a wrap).
+    struct AlaEmission {
+        std::string  clip_name;        // empty for single-clip back-compat
+        std::wstring path;
+        std::size_t  bytes_written  = 0;
+        bool         wrote_ok       = false;
+        bool         has_anim_track = false;
+        const alamo_format::AlaAnimation* anim = nullptr;
+    };
+    std::vector<AlaEmission> emissions;
+    emissions.reserve(clips.size());
+
+    // Compute the basename prefix once: strip the trailing ".alo"/".ALO"
+    // (case-insensitive) so multi-clip siblings can append "_<NAME>.ala".
+    std::wstring basename_w = name;
+    if (basename_w.size() >= 4) {
+        std::wstring tail = basename_w.substr(basename_w.size() - 4);
+        for (auto& c : tail) c = static_cast<wchar_t>(towlower(c));
+        if (tail == L".alo") basename_w.resize(basename_w.size() - 4);
+    }
+
+    for (const auto& clip : clips) {
+        AlaEmission em;
+        em.clip_name = clip.name;
+        em.anim      = &clip.anim;
+
+        // Phase 8d: a clip with only animated visibility still gets a
+        // sibling .ala (track_leaves carries 0x1007 chunks).
+        for (const auto& b : clip.anim.bones) {
             if (b.idx_rotation >= 0 || b.idx_translation >= 0 ||
                 !b.track_leaves.empty()) {
-                // Phase 8d: track_leaves carries 0x1007 visibility chunks.
-                // A scene with ONLY animated visibility (e.g. a lone
-                // blinking light) still needs the sibling .ala.
-                has_anim_track = true; break;
+                em.has_anim_track = true;
+                break;
             }
         }
-        if (has_anim_track) {
-            try {
-                auto ala_tree  = alamo_format::build_ala(anim);
-                auto ala_bytes = alamo_format::write_chunk_tree(ala_tree);
-                // Replace ".alo"/".ALO" suffix with ".ala". If `name`
-                // doesn't end in .alo (e.g. user typed a different
-                // extension), append ".ala" so we never overwrite the
-                // .alo we just wrote.
-                std::wstring ala_path = name;
-                if (ala_path.size() >= 4) {
-                    std::wstring tail = ala_path.substr(ala_path.size() - 4);
-                    for (auto& c : tail) c = static_cast<wchar_t>(towlower(c));
-                    if (tail == L".alo") ala_path.resize(ala_path.size() - 4);
-                }
-                ala_path += L".ala";
-                if (write_all(ala_path.c_str(), ala_bytes)) {
-                    wrote_ala = true;
-                    ala_bytes_written = ala_bytes.size();
-                }
-            } catch (const std::exception&) {
-                // swallowed; .ala emission is best-effort
-            }
+        if (!em.has_anim_track) {
+            emissions.push_back(std::move(em));
+            continue;
         }
+
+        em.path = basename_w;
+        if (!clip.name.empty()) {
+            em.path.push_back(L'_');
+            // Clip names are ASCII per the authoring spec; widen each
+            // byte. Non-ASCII bytes (if any leaked past the walker)
+            // become the same wchar_t value -- still a valid filename
+            // path on Windows.
+            for (char c : clip.name) em.path.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
+        }
+        em.path += L".ala";
+
+        try {
+            auto ala_tree  = alamo_format::build_ala(clip.anim);
+            auto ala_bytes = alamo_format::write_chunk_tree(ala_tree);
+            if (write_all(em.path.c_str(), ala_bytes)) {
+                em.wrote_ok      = true;
+                em.bytes_written = ala_bytes.size();
+            }
+        } catch (const std::exception&) {
+            // swallowed; .ala emission is best-effort per-clip
+        }
+        emissions.push_back(std::move(em));
     }
+
+    const std::size_t n_clips_written = std::count_if(
+        emissions.begin(), emissions.end(),
+        [](const AlaEmission& e) { return e.wrote_ok; });
 
     // 4.5 Drop a sibling .export.log explaining what we saw on the
     // material side, for debugging "why did THIS texture get exported"
@@ -207,23 +240,44 @@ int AloExport::DoExport(const TCHAR*  name,
         std::string log;
         log_material_diagnostics(i, log);
         log_scene_summary(scene, log);
-        if (wrote_ala) {
-            // Phase 8d: count visibility-track emitters across all bones.
-            std::size_t n_vis_tracks = 0;
-            for (const auto& b : anim.bones) {
-                for (const auto& leaf : b.track_leaves) {
-                    if (leaf.id == 0x1007) { ++n_vis_tracks; break; }
+        if (!emissions.empty()) {
+            char header[128];
+            std::snprintf(header, sizeof(header),
+                "\nAnimation: %zu clip(s) declared, %zu written\n",
+                emissions.size(), n_clips_written);
+            log += header;
+            for (const auto& em : emissions) {
+                std::size_t n_vis_tracks = 0;
+                if (em.anim) {
+                    for (const auto& b : em.anim->bones) {
+                        for (const auto& leaf : b.track_leaves) {
+                            if (leaf.id == 0x1007) { ++n_vis_tracks; break; }
+                        }
+                    }
                 }
+                const char* status =
+                    em.wrote_ok        ? "WROTE"
+                  : em.has_anim_track  ? "FAILED"
+                                       : "SKIPPED (no animation tracks)";
+                std::string clip_label = em.clip_name.empty() ? "<single>" : em.clip_name;
+                char clip_line[320];
+                if (em.anim) {
+                    std::snprintf(clip_line, sizeof(clip_line),
+                        "  [%s] %s: %u frames @ %.2f fps, %zu bone(s), "
+                        "%u rotation word(s), %u translation word(s), "
+                        "%zu visibility track(s); %zu bytes\n",
+                        status, clip_label.c_str(),
+                        em.anim->n_frames, static_cast<double>(em.anim->fps),
+                        em.anim->bones.size(),
+                        em.anim->n_rotation_words, em.anim->n_translation_words,
+                        n_vis_tracks, em.bytes_written);
+                } else {
+                    std::snprintf(clip_line, sizeof(clip_line),
+                        "  [%s] %s: (no animation data)\n",
+                        status, clip_label.c_str());
+                }
+                log += clip_line;
             }
-            char anim_line[256];
-            std::snprintf(anim_line, sizeof(anim_line),
-                "\nAnimation: %u frames @ %.2f fps, %zu bone(s), "
-                "%u rotation word(s), %u translation word(s), "
-                "%zu visibility track(s); .ala = %zu bytes\n",
-                anim.n_frames, static_cast<double>(anim.fps),
-                anim.bones.size(), anim.n_rotation_words,
-                anim.n_translation_words, n_vis_tracks, ala_bytes_written);
-            log += anim_line;
         }
         std::wstring log_path = std::wstring(name) + L".export.log";
         std::ofstream lf(log_path, std::ios::binary | std::ios::trunc);
