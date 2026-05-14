@@ -10,6 +10,8 @@
 #include <utilapi.h>
 #include <plugapi.h>
 #include <custcont.h>   // ISpinnerControl, GetISpinner, SetupIntSpinner
+#include <maxscript/maxscript.h>             // ExecuteMAXScriptScript (Phase 8f propagation button)
+#include <maxscript/util/listener.h>
 
 #include <string>
 
@@ -236,6 +238,39 @@ INT_PTR CALLBACK NodeOptionsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM l
                 WriteBoolProp(node, kPropAltDecStayHidden,
                               IsDlgButtonChecked(hDlg, id) == BST_CHECKED);
                 return TRUE;
+            case IDC_NODE_PROPAGATE_VISIBILITY: {
+                // Phase 8f: copy each selected node's `isHidden` flag and
+                // `visibility` controller to all descendants. The recursion
+                // is in MaxScript -- much shorter than walking the scene
+                // graph through the C++ SDK. Output goes to the listener
+                // log; the action is wrapped in `undo on` so one Max undo
+                // reverts the whole batch.
+                static const TCHAR* kScript = _T(
+                    "(\n"
+                    "  fn alamoPropagateVisFromParent parent child = (\n"
+                    "    child.isHidden = parent.isHidden\n"
+                    "    try (child.visibility = copy parent.visibility) catch ()\n"
+                    "    for c in child.children do alamoPropagateVisFromParent parent c\n"
+                    "  )\n"
+                    "  alamoCnt = 0\n"
+                    "  undo on (\n"
+                    "    for parent in selection do (\n"
+                    "      for c in parent.children do (\n"
+                    "        alamoPropagateVisFromParent parent c\n"
+                    "        alamoCnt += 1\n"
+                    "      )\n"
+                    "    )\n"
+                    "  )\n"
+                    "  format \"[alamo] propagated visibility from % selected node(s); % direct children touched (descendants follow)\\n\" selection.count alamoCnt\n"
+                    ")\n"
+                );
+                FPValue result;
+                ExecuteMAXScriptScript(const_cast<TCHAR*>(kScript),
+                                       MAXScript::ScriptSource::Embedded,
+                                       /*quietErrors=*/TRUE,
+                                       &result);
+                return TRUE;
+            }
             case IDC_BILLBOARD_DISABLE:
             case IDC_BILLBOARD_PARALLEL:
             case IDC_BILLBOARD_FACE:

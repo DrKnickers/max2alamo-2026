@@ -15,7 +15,7 @@
 
 // ---- Node Export Options --------------------------------------------------
 
-IDD_ALAMO_NODE_EXPORT_OPTIONS DIALOGEX 0, 0, 108, 198
+IDD_ALAMO_NODE_EXPORT_OPTIONS DIALOGEX 0, 0, 108, 218
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_VISIBLE
 FONT 8, "Ms Shell Dlg", 400, 0, 0x1
 BEGIN
@@ -54,6 +54,10 @@ BEGIN
                     16, 164, 80, 10
     AUTOCHECKBOX    "Alt Dec Stay Hidden", IDC_NODE_ALT_DEC_STAY_HIDDEN,
                     16, 176, 80, 10
+
+    PUSHBUTTON      "Propagate visibility to descendants",
+                    IDC_NODE_PROPAGATE_VISIBILITY,
+                    4, 195, 100, 18
 END
 
 // ---- Quick Selection Utility ----------------------------------------------

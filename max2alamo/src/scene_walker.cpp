@@ -980,7 +980,13 @@ void walk_node(IGameNode* node, alamo_format::ExportScene& scene,
                 if (!is_skinned) {
                     synth_bone.name           = to_utf8(node->GetName());
                     synth_bone.parent_index   = 0;          // child of Root
-                    synth_bone.visible        = true;
+                    // Phase 8f: honor Max-side IsNodeHidden, mirroring
+                    // walk_lights/walk_proxies. Static-mesh synth bones
+                    // were previously hardcoded visible=true regardless
+                    // of the Max hidden flag -- a per-node-local-only
+                    // visibility expression (per the corpus convention
+                    // pinned by Phase 8f mesh_hierarchy test).
+                    synth_bone.visible        = node->IsNodeHidden() == FALSE;
                     // Phase 5d: Alamo_Billboard_Mode on a static-mesh
                     // node propagates to the synthetic per-mesh bone
                     // that the engine animates as a billboard.
@@ -1303,7 +1309,10 @@ void walk_animation(IGameScene* igame,
 
     const int start = read_node_user_prop_int(root, kPropAnimStart, 0);
     const int end   = read_node_user_prop_int(root, kPropAnimEnd,   0);
-    if (end <= start) return;  // no clip authored -> no .ala
+    // Phase 8f: allow end == start (single-frame clip, n_frames=1).
+    // The previous gate `end <= start` rejected 1-frame clips, which
+    // are a legitimate edge case (e.g. a one-pose animation).
+    if (end < start) return;  // truly invalid range -> no .ala
 
     const int n_frames = end - start + 1;
 
