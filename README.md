@@ -14,9 +14,9 @@ If you're using this plugin, you should know that. If you're auditing the code, 
 
 ## Status
 
-**Pre-release, not yet feature-complete.** See [CONTRIBUTING.md](CONTRIBUTING.md). The first public release (v1.0) ships when EaW + FoC export is feature-complete.
+**v0.9.0 — feature-complete, stabilizing.** Format library + Max plugin cover the full v1 scope listed below. The pre-1.0 numbering signals a release-candidate quality bar with a stabilization window before committing to v1.0 stability guarantees. See [CHANGELOG.md](CHANGELOG.md) for the per-release log and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution conventions.
 
-For the full picture — what's shipped, what's next, where things live, key decisions, command cheat sheet — see **[`docs/development-log.md`](docs/development-log.md)**.
+For the full picture — what's shipped, what's next, where things live, key decisions, command cheat sheet — see **[`docs/development-log.md`](docs/development-log.md)**. Release procedure lives in [`docs/release.md`](docs/release.md).
 
 ## Goals (v1)
 
