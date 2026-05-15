@@ -10,6 +10,7 @@
 #include "alo_export.h"
 #include "alamo_utility.h"
 #include "alamo_proxy_helper.h"
+#include "legacy_clip_importer.h"
 
 #include <Max.h>
 #include <iparamb2.h>
@@ -76,14 +77,33 @@ extern "C" __declspec(dllexport) ULONG LibVersion()
     return VERSION_3DSMAX;
 }
 
-// Tells Max it's safe to defer loading this DLL until first use, instead
-// of pulling it in at startup. Both class types we expose (SceneExport,
-// Utility) qualify because neither registers controllers or persistent
-// scene data at init -- the Utility's user-prop reads/writes happen
-// lazily when the user opens the rollout.
+// Tells Max whether the DLL is safe to defer-load. Phase 11c needs to
+// be in memory at Max startup so its NOTIFY_FILE_POST_OPEN handler is
+// registered BEFORE the user opens a legacy `.max` file -- otherwise
+// the importer never fires and legacy animation clips silently fail to
+// translate. Returning 0 forces eager load at Max startup. The cost is
+// a few-hundred-KB resident memory bump for users who don't author
+// Alamo content; the alternative is silent breakage of the legacy
+// clip-import workflow, which is worse.
 extern "C" __declspec(dllexport) ULONG CanAutoDefer()
 {
-    return 1;
+    return 0;
+}
+
+// LibInitialize runs once when Max loads this DLL (at startup with
+// CanAutoDefer=0 above). This is the right place to register
+// process-lifetime notification callbacks.
+extern "C" __declspec(dllexport) int LibInitialize()
+{
+    max2alamo::RegisterLegacyClipImportNotifications();
+    return TRUE;
+}
+
+// LibShutdown runs once at Max exit, paired with LibInitialize.
+extern "C" __declspec(dllexport) int LibShutdown()
+{
+    max2alamo::UnregisterLegacyClipImportNotifications();
+    return TRUE;
 }
 
 // Standard Win32 DLL entry. Max wants HINSTANCE captured for resource

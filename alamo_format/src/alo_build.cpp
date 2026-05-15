@@ -439,6 +439,21 @@ ChunkNode build_submesh_geometry(const ExportSubmesh& sub,
     // 0x10004: face indices (3 x uint16 per triangle).
     kids.push_back(build_face_chunk(sub.indices));
 
+    // 0x10006: per-submesh skin-bone-remap (Phase 10.5, issue #81).
+    // Emitted only for skinned submeshes — when populated, the
+    // per-vertex bone_indices are LOCAL slot indices that the renderer
+    // dereferences through this table (`bones[skin_bone_remap[idx]]`).
+    // AloViewer's loader expects this chunk to sit between 0x10004 and
+    // 0x1200, before any collision-tree chunk.
+    if (!sub.skin_bone_remap.empty()) {
+        std::vector<std::uint8_t> p;
+        p.reserve(sub.skin_bone_remap.size() * 4);
+        for (std::uint32_t g : sub.skin_bone_remap) {
+            append_u32(p, g);
+        }
+        kids.push_back(make_leaf(0x10006, std::move(p)));
+    }
+
     // 0x1200: collision tree (Phase 9.2). Only attached when the parent
     // mesh is flagged as a collision mesh. Without one, the engine builds
     // a runtime BVH at load time -- so this is an optimization, not a

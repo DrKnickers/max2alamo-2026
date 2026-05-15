@@ -97,6 +97,18 @@ struct ExportSubmesh {
     // `alD3dVertNU2` (Phase 4 default, preserves back-compat for
     // callers / tests that don't set it).
     std::string               vertex_format_name;
+    // 0x10006 skin-bone-remap table. Per AloViewer's loader
+    // (`src/Assets/Models.cpp:155`), this is a flat list of global
+    // skeleton bone indices; the renderer dereferences each per-vertex
+    // `bone_indices[i]` value through this list to get the actual
+    // bone matrix (`bones[skin_bone_remap[bone_indices[i]]]`). So when
+    // this list is populated, `ExportVertex::bone_indices` MUST contain
+    // LOCAL slot indices (0..N-1 where N = `skin_bone_remap.size()`),
+    // not global skeleton indices. Phase 10.5 (#81): only populated
+    // for skinned submeshes (vertex_format_name starts with
+    // `alD3dVertRSkin` or `alD3dVertB4I4`); empty for static meshes.
+    // Empty = writer omits the 0x10006 chunk.
+    std::vector<std::uint32_t> skin_bone_remap;
     std::vector<ExportVertex> vertices;
     std::vector<std::uint32_t> indices;   // 3 per face, expanded
 };
