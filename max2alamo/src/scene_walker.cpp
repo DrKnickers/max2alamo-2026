@@ -242,6 +242,14 @@ constexpr const TCHAR* kPropCollisionEnabled= _T("Alamo_Collision_Enabled");
 constexpr const TCHAR* kPropGeometryHidden  = _T("Alamo_Geometry_Hidden");
 constexpr const TCHAR* kPropBillboardMode   = _T("Alamo_Billboard_Mode");
 
+// Phase 12.1: legacy Petroglyph MaxScript hook. Older PG tooling
+// (pre-radio-button era) authored billboards as a boolean rather than
+// the 0..7 mode enum. We read this as a back-compat fallback ONLY when
+// the modern Alamo_Billboard_Mode prop is absent -- modern wins on
+// any conflict. Maps `_ALAMO_BILLBOARDS == 1` -> BBT_PARALLEL (mode 1),
+// the most common legacy intent; any other value -> Disable (0).
+constexpr const TCHAR* kPropBillboardsLegacy = _T("_ALAMO_BILLBOARDS");
+
 // Phase 12: legacy PG MaxScript hook to mark a mesh as a shadow-volume
 // regardless of material. Read as an int (legacy convention: 1 = on);
 // when present and == 1 we run the closed-volume validator even if the
@@ -254,6 +262,23 @@ constexpr const TCHAR* kPropShadowVolume    = _T("_ALAMO_SHADOW_VOLUME");
 // a 100-file sample.
 constexpr const char* kShaderMeshShadowVolume  = "MeshShadowVolume.fx";
 constexpr const char* kShaderRSkinShadowVolume = "RSkinShadowVolume.fx";
+
+// Phase 12.1: resolve a node's billboard mode with legacy back-compat.
+// Modern Alamo_Billboard_Mode (int, 0..7) wins. Falls back to the
+// legacy `_ALAMO_BILLBOARDS = 1` MaxScript boolean -> BBT_PARALLEL (1)
+// only when the modern prop is absent. Any other state -> 0 (Disable),
+// preserving the existing default for un-tagged nodes.
+int resolve_billboard_mode(INode* node)
+{
+    if (!node) return 0;
+    if (has_node_user_prop(node, kPropBillboardMode)) {
+        return read_node_user_prop_int(node, kPropBillboardMode, 0);
+    }
+    if (read_node_user_prop_int(node, kPropBillboardsLegacy, 0) == 1) {
+        return 1;  // BBT_PARALLEL
+    }
+    return 0;
+}
 
 // Inspect a Max material and figure out what shader / texture pair best
 // represents it for Phase 4 export. Decision tree:
@@ -812,8 +837,10 @@ void walk_bones(IGameNode* node, std::uint32_t parent_bone_idx,
         // to the bone chunk's billboard_mode field. Engine reads this
         // to drive runtime billboard rotation (foliage, lens flares,
         // sun discs). Default 0 = Disable when prop absent.
+        // Phase 12.1: resolve_billboard_mode also honors the legacy
+        // _ALAMO_BILLBOARDS=1 MaxScript hook as a back-compat fallback.
         bone.billboard_mode = static_cast<std::uint32_t>(
-            read_node_user_prop_int(node->GetMaxNode(), kPropBillboardMode, 0));
+            resolve_billboard_mode(node->GetMaxNode()));
         // GetLocalTM returns the node's transform relative to its Max
         // parent. For top-level bones this is the world transform (Max
         // scene root is identity); for child bones it's the
@@ -1147,8 +1174,10 @@ void walk_node(IGameNode* node, alamo_format::ExportScene& scene,
                     // Phase 5d: Alamo_Billboard_Mode on a static-mesh
                     // node propagates to the synthetic per-mesh bone
                     // that the engine animates as a billboard.
+                    // Phase 12.1: legacy _ALAMO_BILLBOARDS hook honored
+                    // via resolve_billboard_mode.
                     synth_bone.billboard_mode = static_cast<std::uint32_t>(
-                        read_node_user_prop_int(max_node, kPropBillboardMode, 0));
+                        resolve_billboard_mode(max_node));
                     // Phase 5g: compose with the static-mesh node's
                     // object offset (e.g. mesh-marker hardpoints when
                     // a future workflow allows Alamo_Export_Geometry=
