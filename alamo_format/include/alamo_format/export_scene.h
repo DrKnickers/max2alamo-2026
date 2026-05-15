@@ -87,6 +87,16 @@ struct ExportMaterial {
 // development log).
 struct ExportSubmesh {
     ExportMaterial            material;
+    // 0x10002 vertex-format-name string. The engine's renderer reads
+    // this via case-insensitive lookup into AloViewer's 15-entry
+    // VertexFormatNames table to bind the GPU vertex declaration;
+    // misreporting it breaks rendering at the shader-input level
+    // (skinned meshes collapse, etc.). Phase 10 populated by the
+    // walker via vertex_format_selector::default_vertex_format_for_shader
+    // for stock PG shaders. Empty = fall back to the basic
+    // `alD3dVertNU2` (Phase 4 default, preserves back-compat for
+    // callers / tests that don't set it).
+    std::string               vertex_format_name;
     std::vector<ExportVertex> vertices;
     std::vector<std::uint32_t> indices;   // 3 per face, expanded
 };

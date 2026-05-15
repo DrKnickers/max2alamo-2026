@@ -12,10 +12,12 @@ namespace alamo_format {
 
 namespace {
 
-// Vertex format string emitted in 0x10002. Phase 4 only emits the
-// non-skinned, no-tangent layout. Other layouts come online as later
-// phases need them.
-constexpr const char* kVertexFormatName = "alD3dVertNU2";
+// Fallback vertex-format-name string for 0x10002 when an ExportSubmesh
+// leaves `vertex_format_name` empty. Phase 10 plumbed the per-submesh
+// field through the walker (issue #75); this default preserves back-
+// compat for tests + alo_synth callers that build ExportSubmesh
+// objects without going through the walker.
+constexpr const char* kDefaultVertexFormatName = "alD3dVertNU2";
 
 // Vertex chunk ID (rev 2 = 144 bytes per vertex). Vanilla content uses
 // 0x10007 for >98% of submeshes, including all alD3dVertNU2 chunks
@@ -419,10 +421,15 @@ ChunkNode build_submesh_geometry(const ExportSubmesh& sub,
         kids.push_back(make_leaf(0x10001, std::move(p)));
     }
 
-    // 0x10002: vertex format name as cstring.
+    // 0x10002: vertex format name as cstring. Use the per-submesh
+    // value when the caller populated it; fall back to the basic
+    // mesh format for back-compat with pre-Phase-10 callers.
     {
         std::vector<std::uint8_t> p;
-        append_cstring(p, kVertexFormatName);
+        const std::string vfmt = sub.vertex_format_name.empty()
+                                   ? std::string(kDefaultVertexFormatName)
+                                   : sub.vertex_format_name;
+        append_cstring(p, vfmt);
         kids.push_back(make_leaf(0x10002, std::move(p)));
     }
 
