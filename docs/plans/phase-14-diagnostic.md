@@ -1,12 +1,86 @@
 # Phase 14 diagnostic plan — animation playback pose mismatch
 
-> **Status**: investigation, harness landed. The walker has not been
-> modified. See [issue #84](https://github.com/DrKnickers/max2alamo-2026/issues/84)
-> for the bug report. This doc supersedes the "byte-diff vanilla vs
-> re-export" approach in the issue body, which the Phase 10.5 close-out
-> session discovered is not runnable (Mike Lankamp's `alamo2max.ms`
-> importer does not work in Max 2026; updating it is a separate
-> project).
+> **Status**: **RESOLVED 2026-05-15.** Root cause was Max SDK's
+> `Quat(Matrix3)` constructor returning the inverse rotation
+> quaternion (the conjugate of what the `.ala` format expects).
+> Fix in [scene_walker.cpp:1582](../../max2alamo/src/scene_walker.cpp#L1582):
+> conjugate the result of `extract_rotation_quat` before packing.
+> One-line change; .alo bone matrices unchanged (rest poses unaffected);
+> .ala per-frame quat values now byte-match vanilla content (15 of
+> 18 shared bones in EI_SNOWTROOPER's IDLE_00 match vanilla
+> EI_TROOPER's IDLE_00 within epsilon; the 3 outliers are real
+> asset-authoring differences between the ThrREv mod's Snowtrooper
+> rig and vanilla's stock Trooper rig).
+>
+> See [issue #84](https://github.com/DrKnickers/max2alamo-2026/issues/84)
+> for the original bug report.
+
+## Resolution diagnostic (the path that actually worked)
+
+The story from this session, in the order findings arrived:
+
+1. **The issue body's plan (byte-diff vanilla via Mike Lankamp's importer)
+   isn't runnable** — Mike's importer doesn't support Max 2026.
+2. **A minimal MaxScript reproducer (2-bone chain with keyframed Z
+   rotation)** was authored, but BoneSys parenting in MaxScript does
+   *not* preserve world TM by default — `bChild.parent = bParent`
+   silently moves the child's world position through the parent's
+   rotation matrix. The minimal repro exhibited a "wrong pose" symptom
+   that came from this Max-side authoring quirk, not from a walker
+   bug. Time was spent chasing a false H1/H6/H7 hypothesis before
+   recognising this.
+3. **The actual reproducer was EI_SNOWTROOPER** from the start (per
+   the issue body, and what the user had loaded). Exporting it via
+   `3dsmaxbatch` and dumping a representative clip (`IDLE_00.ala`)
+   with `ala_diff --dump`, then **side-by-side comparing against
+   vanilla `EI_TROOPER_IDLE_00.ALA`** (different asset, similar rig,
+   in the corpus) — that surfaced the bug in a single side-by-side:
+
+   | Field | Vanilla | Ours (pre-fix) |
+   |---|---|---|
+   | `trans_offset` | `(-0.430665, 0.235189, 4.661334)` | `(-0.430665, 0.235189, 4.661334)` ✓ |
+   | `default_rot` (x, y, z, w) | `(+0.478, -0.523, +0.454, +0.540)` | `(-0.478, +0.523, -0.454, +0.540)` |
+
+   Same magnitudes, but x/y/z signs flipped and w unchanged — the
+   textbook **quaternion conjugate** signature, representing the
+   inverse rotation.
+4. **Root cause**: Max SDK's `Quat(Matrix3)` constructor returns the
+   conjugate of the rotation the `.ala` format wants. The `0x206` 4x3
+   bone matrix doesn't go through quat extraction, so rest poses were
+   correct (matching the issue body's "rest pose looks correct"
+   observation). Animation tracks DO go through quat extraction, so
+   every frame of every bone was being written as the inverse — chain
+   composition through 36 bones made it appear as "rotated 90 degrees
+   forward but not properly."
+5. **Fix**: conjugate the quat in `extract_rotation_quat` before
+   returning. `Quat(-q.x, -q.y, -q.z, q.w)`. Single line of code.
+   Confirmed: post-fix B_Pelvis matches vanilla byte-for-byte.
+
+## Hypotheses ruled out along the way
+
+In order of investigation:
+
+| # | Hypothesis | Verdict | Why |
+|---|---|---|---|
+| H1 | `compose_with_object_offset` applied to per-frame data when it should only apply to the static `0x206` matrix | ❌ | No-op for BoneSys bones (object offset is identity); confirmed in [scene_walker.cpp:820](../../max2alamo/src/scene_walker.cpp#L820). Issue body's "compose is self-consistent" was correct after all. |
+| H6 | The static `0x206` bone matrix encoding has a basis swap on parented bones | ❌ | The walker's INode-based parent-local computation produces identical bytes to IGame's `GetLocalTM()`; both correctly encode what Max contains. The "wrong" rest pose was a Max-side authoring quirk in the minimal repro. |
+| H7 | `IGameNode::GetLocalTM` uses a different convention than MaxScript's `node.transform` | ❌ | Both produce the same bytes for BoneSys bones. False positive triggered by misreading MaxScript's `node.transform` semantics for parented nodes. |
+
+The bug was in `Quat(Matrix3)`, not in any of the matrix-level paths.
+
+## Follow-up work for future sessions
+
+- **Regenerate Phase 8 maxbatch SHA tests.** All
+  `tests/maxscript/test_phase8_*` (and any rotation-keyframe test
+  that fixed-string-compares against the .ala bytes) need their gold
+  SHAs / expected values regenerated. These were validated against
+  the bug-producing walker so they all break after this fix. New
+  values are correct.
+- **Add an AloViewer-playback verification gate** to close the Tier 4
+  coverage hole. Phase 8's tests asserted the .ala bytes match a
+  fixed SHA, but never asserted the BYTES MATCH WHAT ALOVIEWER
+  EXPECTS. A side-by-side dump-vs-vanilla check at fix time would
+  have caught this immediately; that's what `ala_diff` is now for.
 
 ## Why the issue's original plan is unrunnable
 

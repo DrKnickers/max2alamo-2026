@@ -1541,6 +1541,23 @@ std::array<std::int16_t, 3> pack_translation_uint16(
 // Extract rotation-only Quat from a Matrix3 (drop scale by normalising
 // each column of the upper-left 3x3 to unit length, then construct a
 // Quat from the resulting rotation matrix).
+//
+// Phase 14 (#84): Max SDK's `Quat(Matrix3)` constructor returns the
+// INVERSE of the rotation we want to write to the .ala. The on-disk
+// .ala convention (and AloViewer's reader, and vanilla content) expects
+// the rotation that takes local-frame vectors to world-frame vectors;
+// Max's Quat(Matrix3) returns the conjugate of that. The .alo's 0x206
+// 4x3 matrix encoding does not go through quat extraction, so it
+// produces correct rest poses -- the conjugate discrepancy is invisible
+// until animation playback uses the .ala quats. Diagnostic: comparing
+// our Snowtrooper IDLE_00 B_Pelvis quat to vanilla EI_TROOPER_IDLE_00
+// (same bone, ~same rest pose) showed matching trans_offset but x/y/z
+// components sign-flipped with w unchanged -- the textbook conjugate
+// signature. Visual symptom: bones rotate "forward 90 degrees but not
+// properly" on complex rigs.
+//
+// Fix: conjugate the result before returning. q* = (-x, -y, -z, +w)
+// inverts the rotation, undoing Max's convention swap.
 Quat extract_rotation_quat(const Matrix3& m3_in)
 {
     Matrix3 m3 = m3_in;
@@ -1559,7 +1576,8 @@ Quat extract_rotation_quat(const Matrix3& m3_in)
     m3.SetRow(1, row1);
     m3.SetRow(2, row2);
     m3.SetRow(3, Point3(0.f, 0.f, 0.f));
-    return Quat(m3);
+    Quat q(m3);
+    return Quat(-q.x, -q.y, -q.z, q.w);
 }
 
 // User-prop keys for clip authoring (read on the scene-root node).
