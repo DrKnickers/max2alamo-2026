@@ -47,38 +47,7 @@ The wished-for workflow: keep the whole unit (hull + every hardpoint) in one `.m
 
 ---
 
-## 2. Collision-tree writer for `0x1200` chunks — ✅ SHIPPED in Phase 9.2
-
-(This entry is kept briefly for history; the implementation lives at `alamo_format/include/alamo_format/collision_tree.h` + `.cpp`, the spec is documented in `docs/format-notes.md` "Collision tree (`0x1200`, Phase 9.2)", and the writer is wired into `alo_build.cpp::build_submesh_geometry` for any `ExportMesh` with `is_collision = true`. Will be deleted from this file in a future cleanup once it's clear the entry isn't needed for ongoing context.)
-
-**Original status:** partially scoped (format-level investigation done Phase 9.1; full byte-level decode pending). Not blocking v0.9.0 release.
-
-**Use case.** Every vanilla EaW + FoC collision mesh ships with a `0x1200` collision-tree container (142/142 in a 100-file FoC sample). Our exporter currently omits it; modder-shipped exports still collide in-game (engine builds a fallback at load time), but bypassing the runtime build would shave a tiny load-time cost and, more importantly, would put our output structurally identical to vanilla content — which matters for tools like Mike Lankamp's `alamo2max.ms` round-trip and AloViewer's "view as authored" expectation.
-
-**Sketch (per `docs/format-notes.md` Q5 partial decode):**
-
-- `0x1201` (always 40 bytes): root-node header. Believed to contain a world-space AABB (4 floats observed near `+2`..`+14`) plus per-axis counts at the tail (`+26`..`+40` has byte-level fields that look like `(type, ?, uint16_count, 0)` pairs). Full layout requires more empirical samples or Ghidra.
-- `0x1202` (variable, ~12 bytes per triangle): internal AABB-tree node body. Quantized 8-bit AABB fields per node (observed pattern `00 00 00 ff ff ff` for axis-aligned per-byte min/max in a normalized cell space). Probably encodes `(quantized_bbox, child_index, leaf_index)` per record.
-- `0x1203` (exactly `faceCount × uint16`): face-index permutation list — the order in which faces are referenced by the tree's leaves. Confirmed scaling across 4 samples (330/252/374/12 triangles → 660/504/748/24 bytes).
-
-**Open questions / decisions to make before scoping:**
-
-- **Tree type and split heuristic.** Looks like an AABB tree (likely a BVH). Need to confirm whether splits are surface-area-heuristic (SAH) or median-axis or something cheaper. Engine probably doesn't care which heuristic produced it as long as the tree shape parses; we can pick a simple one.
-- **Full `0x1201` and `0x1202` decode.** The 40 bytes of `0x1201` and the per-record fields of `0x1202` aren't byte-level decoded yet. Two paths:
-  - Ghidra against EaW's `gameobject.dll` — find the chunk-load callsite, walk back to the consumer. Most definitive; significant time investment.
-  - More empirical-diffing: take two collision meshes with KNOWN differences (one triangle vs many triangles; long-thin vs cube-shaped) and diff their `0x1201` / `0x1202` payloads byte-by-byte to isolate which fields are size-dependent vs structure-dependent.
-- **Whether to write it at all** vs. continue to lean on the engine's runtime fallback. If the runtime fallback is meaningfully slower or produces worse trees, we should write; if it's cheap and equivalent, we can skip (and document that our exports are intentionally `0x1200`-less).
-
-**Existing code to lean on.**
-
-- [`alamo_format/src/alo_build.cpp`](../alamo_format/src/alo_build.cpp) — builds the chunk tree per mesh; adding `build_collision_tree(...)` and emitting it under `0x10000` is the natural seam.
-- `0x1203`'s structure is already fully understood (one uint16 per face); the hard part is the tree-node serialization in `0x1202`.
-
-**Likely effort.** 2–4 sessions if Ghidra is required; 1 session if empirical-diffing + tree-shape inference is enough. Defer until v1.0 ships or a modder requests it.
-
----
-
-## 3. `.alo` importer (re-import an exported `.alo` back into Max)
+## 2. `.alo` importer (re-import an exported `.alo` back into Max)
 
 **Status:** post-v1 idea per the README roadmap.
 
