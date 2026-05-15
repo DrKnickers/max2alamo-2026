@@ -372,7 +372,7 @@ MAXScript hooks (mesh-level, scene-level):
 
 | Hook | Effect |
 |---|---|
-| `_ALAMO_BILLBOARDS` | enable billboard processing on a mesh |
+| `_ALAMO_BILLBOARDS` | enable billboard processing on a mesh (Phase 12.1: legacy boolean hook; `= 1` → BBT_PARALLEL when modern `Alamo_Billboard_Mode` is absent) |
 | `_ALAMO_BONES_PER_VERTEX` | choose RSkin (1) vs B4I4 (4) vertex layout |
 | `_ALAMO_SHADOW_VOLUME` | mark as shadow volume mesh (Phase 12: triggers closed-volume validation on export) |
 | `_ALAMO_TANGENT_SPACE` | force tangent/binormal generation |
@@ -380,6 +380,39 @@ MAXScript hooks (mesh-level, scene-level):
 | `_ALAMO_Z_SORT` | enable Z-sorting (likely transparent meshes) |
 
 Our Max 2026 plugin should accept the same property names so existing Max scenes ported from EaW Mod Tools work without re-tagging.
+
+### Billboard pivot convention (Phase 12.1)
+
+The 8 `billboard_mode` values stored in the `0x206` bone chunk (per the [legacy max2alamo radio-button enum](#0x205-bone-chunk-static--0x206-bone-chunk-billboard-aware)) drive runtime per-bone orientation in the engine. None of them carry an explicit "billboard normal axis" field -- the engine assumes a fixed authoring convention and rotates the bone's local frame accordingly.
+
+**Universal authoring rule (all non-Disable modes): the billboard quad's visible-face normal must point along the bone's local -Y axis.**
+
+Established two ways:
+
+1. **AloViewer source** (the canonical viewer). `src/RenderEngine/DirectX9/RenderEngine.cpp:256-266` declares `BillboardCorrection = Quaternion(Vector3(1,0,0), -90deg)` with author comment: *"A matrix to correct billboarded meshes. They point to -Y but should point to +Z."* The -90deg rotation about world X maps bone-local -Y onto the camera-forward direction.
+
+2. **Empirical corpus check** (`scripts/inspect_billboard_orientation.py`, Phase 12.1). On the vanilla EaW + FoC corpus, every PARALLEL (mode 1) and SUNLIGHT_GLOW (mode 6) billboard mesh authored by Petroglyph has its area-weighted average face normal at exactly `(0, -1, 0)` in bone-local space (tightness 1.000 across 14/14 inspected meshes).
+
+Per-mode mechanics (from AloViewer source):
+
+| Mode | Name | Rotation axis | "Front" alignment | Target |
+|---:|---|---|---|---|
+| 0 | DISABLE | — | (none) | — |
+| 1 | PARALLEL | (full reorient) | bone-local -Y → camera | camera |
+| 2 | FACE | (full reorient) | bone-local -Y → camera | camera |
+| 3 | ZAXIS_VIEW | local +Z (preserved) | -Y projected into XY → camera XY | camera |
+| 4 | ZAXIS_LIGHT | local +Z (preserved) | -Y projected into XY → sun XY | scene directional light |
+| 5 | ZAXIS_WIND | local +Z (preserved) | -Y projected into XY → wind XY | global wind heading |
+| 6 | SUNLIGHT_GLOW | (full reorient + sun reposition) | bone-local -Y → camera | camera + sun anchor |
+| 7 | SUN | (same as SUNLIGHT_GLOW) | bone-local -Y → camera | camera + sun anchor |
+
+For ZAxis modes (3/4/5), local +Z is the rotation axis and stays upright -- the engine never tilts the mesh; it only sweeps the local -Y front around +Z to align with the target's XY position. Tree-shadow geometry (the dominant ZAXIS_LIGHT use case in vanilla content) is typically radially symmetric around local Z, so the -Y "front" is more a convention than a visible direction in those meshes; the vanilla shadow-disc meshes inspected have an average face normal at `(0,0,0)` (the disk's symmetric average), not at -Y.
+
+**Authoring in Max:** a default `Plane` primitive lies in the XY plane facing +Z. To match the convention, either rotate the plane 90deg around its local +X so the visible face ends up along -Y, or rotate the node's pivot 90deg around +X (Phase 5g's pivot orientation pass honors this at export time).
+
+**Back-compat:** the legacy MaxScript hook `_ALAMO_BILLBOARDS = 1` (older PG tooling, pre-radio-button era) is read by `scene_walker.cpp::resolve_billboard_mode` as a fallback when the modern `Alamo_Billboard_Mode` user-prop is absent. It resolves to mode 1 (PARALLEL), which is the most common legacy intent.
+
+---
 
 ### Shadow-volume closed-manifold validation (Phase 12)
 

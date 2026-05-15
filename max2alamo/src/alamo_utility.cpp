@@ -296,7 +296,15 @@ INT_PTR CALLBACK NodeOptionsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM l
                     _T("ZAxis Light    — rotate around local Z toward main light\n")
                     _T("ZAxis Wind     — rotate around local Z toward wind\n")
                     _T("Sunlight Glow  — solar-glow lens-flare billboard\n")
-                    _T("Sun            — Sun-disc billboard"),
+                    _T("Sun            — Sun-disc billboard\n\n")
+                    _T("Authoring convention:\n")
+                    _T("The billboard quad's visible face must point along the\n")
+                    _T("bone's local -Y axis. The engine rotates the bone so -Y\n")
+                    _T("aligns with the camera (modes 1/2/6/7) or sweeps the -Y\n")
+                    _T("projection toward the target around local +Z (modes 3/4/5).\n")
+                    _T("In Max: a default Plane primitive faces +Z; rotate it 90°\n")
+                    _T("about its local X (or rotate the node's pivot) so its\n")
+                    _T("visible face points along -Y."),
                     _T("Billboarding Options"), MB_OK | MB_ICONINFORMATION);
                 return TRUE;
             }
