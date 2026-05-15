@@ -64,7 +64,14 @@ First pre-1.0 release. Signals "format library + Max plugin feature-complete, aw
 ### Known limitations
 
 - The `.dle` Max plugin is built locally only; Max SDK is non-redistributable so CI cannot ship it. Each GitHub Release attaches a manually-built `.dle` per `docs/release.md`.
-- **Collision-tree chunks (`0x1200`-`0x1203`) writer not yet implemented.** Phase 9.1 partial decode established that vanilla collision meshes carry these chunks 100% of the time; our exports omit them and rely on the engine's load-time runtime fallback (collision works in-game, just not byte-identical to vanilla). Tracked in [`docs/wishlist.md`](docs/wishlist.md) for v1.x.
+- *(Phase 9.2 lands the collision-tree writer; this is no longer a known limitation as of v0.9.0.)*
+
+### Phase 9.2 — collision-tree writer (pre-v0.9.0)
+
+- **Resolved collision tree `0x1200`-`0x1203` internals** via Petrolution's published spec (<https://modtools.petrolution.net/docs/AloFileFormat>). Full chunk hierarchy is now documented in [`docs/format-notes.md`](docs/format-notes.md) "Collision tree (`0x1200`, Phase 9.2)".
+- New `alamo_format::build_collision_tree` builder in [`alamo_format/include/alamo_format/collision_tree.h`](alamo_format/include/alamo_format/collision_tree.h) + [`.cpp`](alamo_format/src/collision_tree.cpp). Median-axis-split AABB tree with leaf threshold of 4 triangles. Pure C++17; no Max-SDK dependency.
+- Wired into [`alo_build.cpp::build_submesh_geometry`](alamo_format/src/alo_build.cpp) — collision meshes (those with `ExportMesh::is_collision = true`) now emit a `0x1200` child inside their `0x10000` geometry block. Non-collision meshes are unchanged.
+- 8 new Catch2 cases / 100 assertions cover the chunk-level layout, primitive-index preservation across the tree, 0x1201 mini-chunk structure, byte3 quantization monotonicity, degenerate-bbox edge case, and counter-consistency (header `nNodes` matches actual record count).
 
 ### Phase 9.1 — format spec close-out (pre-v0.9.0)
 
