@@ -1,5 +1,11 @@
-// Resource file for the max2alamo plugin. Phase 3 keeps it minimal --
-// just version info so Windows shows something sensible in Properties.
+// Resource file for the max2alamo plugin.
+//
+// This file is a configure_file(@ONLY) template — the @PROJECT_VERSION_*@
+// placeholders below are substituted at CMake-configure time from the
+// top-level `project(max2alamo_2026 VERSION ...)` call. To bump the
+// embedded VersionInfo, update that project(VERSION ...) line and
+// reconfigure; no edits to this file are needed.
+//
 // Localized strings (description, author, copyright) live as raw literals
 // in plugin_entry.cpp / alo_export.cpp during early development; if we
 // later need locale support we can move them into a string table here.
@@ -7,8 +13,8 @@
 #include <winver.h>
 
 VS_VERSION_INFO VERSIONINFO
-    FILEVERSION     0,0,1,0
-    PRODUCTVERSION  0,0,1,0
+    FILEVERSION     @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+    PRODUCTVERSION  @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
     FILEFLAGSMASK   0x3FL
     FILEFLAGS       0x0L
     FILEOS          VOS__WINDOWS32
@@ -21,12 +27,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "max2alamo-2026 contributors"
             VALUE "FileDescription",  "Alamo (.alo / .ala) exporter for 3ds Max 2026"
-            VALUE "FileVersion",      "0.0.1"
+            VALUE "FileVersion",      "@PROJECT_VERSION@"
             VALUE "InternalName",     "max2alamo"
             VALUE "LegalCopyright",   "MIT License -- see LICENSE in the source repo"
             VALUE "OriginalFilename", "max2alamo.dle"
             VALUE "ProductName",      "max2alamo-2026"
-            VALUE "ProductVersion",   "0.0.1"
+            VALUE "ProductVersion",   "@PROJECT_VERSION@"
         END
     END
     BLOCK "VarFileInfo"
