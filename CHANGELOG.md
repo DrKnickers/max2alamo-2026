@@ -64,7 +64,14 @@ First pre-1.0 release. Signals "format library + Max plugin feature-complete, aw
 ### Known limitations
 
 - The `.dle` Max plugin is built locally only; Max SDK is non-redistributable so CI cannot ship it. Each GitHub Release attaches a manually-built `.dle` per `docs/release.md`.
-- The `0x402` mesh bbox layout, `0x10002` vertex-format chunk payload, and collision-tree chunks (`0x1200`-`0x1203`) are not fully specced. None block current export.
+- **Collision-tree chunks (`0x1200`-`0x1203`) writer not yet implemented.** Phase 9.1 partial decode established that vanilla collision meshes carry these chunks 100% of the time; our exports omit them and rely on the engine's load-time runtime fallback (collision works in-game, just not byte-identical to vanilla). Tracked in [`docs/wishlist.md`](docs/wishlist.md) for v1.x.
+
+### Phase 9.1 — format spec close-out (pre-v0.9.0)
+
+- **Resolved `0x402` mesh-metadata bbox layout.** 6 floats at offset `+4` are `(min[3], max[3])` AABB corners. Confirmed against AloViewer source (`src/Assets/Models.cpp:184-190`) and empirically (69/69 vanilla meshes match within `1e-3` tolerance). Our writer already emitted this layout; the TODO-validate comment was removed.
+- **Resolved `0x10002` vertex-format chunk payload.** Just the null-terminated format-name string. (Dev-log "Open format questions" section was stale; corrected.)
+- **Partially mapped collision tree** (`0x1200`-`0x1203`). Tree shape established: `0x1201` is always 40 bytes (fixed root header), `0x1202` scales ~12 bytes/triangle (variable AABB-tree body), `0x1203` is exactly `faceCount × uint16` (face-index permutation list). Full byte-level decode deferred to v1.x.
+- New `scripts/inspect_mesh_bbox.py` empirical inspector committed under `scripts/` for future use.
 
 [Unreleased]: https://github.com/DrKnickers/max2alamo-2026/compare/v0.9.0...HEAD
 [0.9.0]: https://github.com/DrKnickers/max2alamo-2026/releases/tag/v0.9.0

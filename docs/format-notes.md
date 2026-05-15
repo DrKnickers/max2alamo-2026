@@ -124,7 +124,8 @@ Mesh metadata (`0x402`, always 128 bytes total):
 
 ```
 uint32  materialCount         // offset 0
-float   bbox_or_other[6]      // offset 4..28  (bounding box; layout TBD - Mike's reader skips them)
+float   min[3]                // offset 4..16  (AABB min corner)
+float   max[3]                // offset 16..28 (AABB max corner)
 uint32  unused                // offset 28..32 (skipped by importer)
 uint32  isHidden              // offset 32..36
 uint32  isCollisionMesh       // offset 36..40
@@ -132,6 +133,8 @@ uint8   reserved[88]          // offset 40..128 (zero-padded in vanilla content)
 ```
 
 The 128-byte fixed size was confirmed across 10,678 `0x402` chunks in the vanilla corpus - same fixed-size-header pattern as `0x201`. Reference: `alamo2max.ms:546-550`.
+
+**`min[3]` / `max[3]` confirmed Phase 9.1**: AloViewer source `src/Assets/Models.cpp:184-190` reads exactly `materialCount`, `mesh->bounds.min` (Vector3), `mesh->bounds.max` (Vector3), `unused`, `isVisible = (val == 0)`, `isCollidable = (val != 0)`. Cross-validated empirically: 69/69 vanilla meshes have the 6 floats match the mesh's vertex-position AABB within `1e-3` tolerance (`scripts/inspect_mesh_bbox.py`). AloViewer uses the bounds to draw the per-mesh AABB wireframe overlay (`ObjectTemplate.cpp:296-329`); in-engine use is presumed frustum culling but not directly observable from this source.
 
 ---
 
@@ -554,11 +557,11 @@ When both conventions are authored on the same scene, **the multi-clip path wins
 | # | Question | Resolution path |
 |---|---|---|
 | 1 | ~~RSkin and non-skinned vertex layouts: confirm byte sizes inferred from name suffixes.~~ **Resolved Phase 4b:** all formats use the same 128 / 144-byte B4I4 layout; format name selects field interpretation, not size. |
-| 2 | `0x402` mesh metadata: bbox layout (6 floats min/max vs other?). | Internal layout still TBD; container size is **resolved** (always 128 bytes; documented fields take 40 bytes, remaining 88 are reserved). Decoder confirmed via cross-check on collision meshes (`hidden=1 collision=1` only on meshes with `MeshCollision.fx`). |
+| 2 | ~~`0x402` mesh metadata: bbox layout (6 floats min/max vs other?).~~ **Resolved Phase 9.1:** 6 floats are `min[3]` then `max[3]` (AABB corner pair). AloViewer source `src/Assets/Models.cpp:184-190` reads them directly into a `Vector3 min` + `Vector3 max` pair; empirically 69/69 vanilla meshes' floats match the mesh's vertex AABB within `1e-3` tolerance. Container size resolved earlier (always 128 bytes; 40 documented fields + 88 reserved). |
 | 2b | `0x201` reserved 124 bytes: confirmed all-zero across sampled files. **Resolved.** | --- |
 | 3 | ~~`0x10002` vertex format chunk payload: just the format string? Format flags?~~ **Resolved Phase 4b:** just the null-terminated format-name string (e.g. `alD3dVertNU2\0`). Confirmed in `RV_XWING.ALO` (multiple instances dumped) and across the corpus. |
 | 4 | Format-version indicator: how does the engine distinguish EaW-style vs FoC-style `.ala` for a given file? | Phase 8: presence/absence of mini-chunks 11/12/13 in `0x1001` is the signal (per `alamo2max.ms:855-861`). |
-| 5 | Collision tree (`0x1200`-`0x1203`) internal structure. | Phase 4 / 5 if collision export is needed; not required for static rendering. |
+| 5 | Collision tree (`0x1200`-`0x1203`) internal structure. | **Phase 9.1 partial decode** (full byte-level layout deferred to v1.x): `0x1200` is a container present on 100% of vanilla collision meshes (142/142 across a 100-file FoC sample) but absent from our current exports. Both AloViewer (`src/Assets/Models.cpp:164-169`) and Mike Lankamp's importer (`alamo2max.ms:528`) deliberately call `.skip()` past the entire container -- collision is engine-internal. Empirical chunk-tree shape: **`0x1201` is always 40 bytes** regardless of mesh complexity (fixed-size header -- likely root-AABB + global counts); **`0x1202` scales at ~12 bytes per triangle** (variable-size internal AABB-tree node body with quantized bboxes -- the X-Wing's collisionbox shows 8-bit-quantized fields with the pattern `00 00 00 ff ff ff` repeating); **`0x1203` is exactly `faceCount × uint16`** (confirmed across multiple samples: 330 tris → 660 bytes, 252 → 504, 374 → 748 -- a face-index permutation list, ordering faces into the tree's leaf groupings). Full byte-level decode of `0x1202` would require either Ghidra against EaW's `gameobject.dll` or more empirical-record-diffing on a larger sample. **Practical impact:** our exports omit `0x1200` and modders have used the resulting `.alo` files for collision in-game -- the engine has a load-time fallback (presumed runtime BVH build over the mesh's face list). Tracked as a v1.x feature in `docs/wishlist.md`. |
 | 6 | What does `_ALAMO_VERTEX_TYPE` accept as values? | Confirm via Phase 4 RE of the exporter binary if Standard-material → vertex-format inference proves insufficient. |
 | 7 | ~~Bone matrix on-disk byte order.~~ **Resolved Phase 4c:** 3 columns of 4 elements stored column-major (NOT row-major). Identity = `1,0,0,0, 0,1,0,0, 0,0,1,0`. Row-major mistake produces a degenerate transform that collapses all geometry. |
 | 8 | ~~`0x10100` and `0x10000` nested?~~ **Resolved Phase 4c:** they are SIBLINGS inside `0x400`, alternating per submesh (`0x10100` material then `0x10000` geometry). NOT nested. |
