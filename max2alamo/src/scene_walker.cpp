@@ -17,6 +17,7 @@
 #include "alamo_format/shader_table.h"
 #include "alamo_format/skin_weights.h"
 #include "alamo_format/shadow_volume_check.h"
+#include "alamo_format/skin_bone_remap.h"
 #include "alamo_format/vertex_format_selector.h"
 
 #include <maxscript/maxscript.h>
@@ -739,6 +740,17 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh,
     if (!bbox_seeded) {
         out.bbox_min = { 0.f, 0.f, 0.f };
         out.bbox_max = { 0.f, 0.f, 0.f };
+    }
+
+    // Phase 10.5 (issue #81): for skinned submeshes, build the per-
+    // submesh 0x10006 skin-bone-remap table and rewrite the per-vertex
+    // bone_indices from global skeleton indices to local slot indices.
+    // The renderer expects local slots when 0x10006 is present (see
+    // AloViewer src/Assets/Models.cpp:155). Static-mesh submeshes
+    // (non-skinned vertex formats) skip this -- vanilla content
+    // only emits 0x10006 for skinned shaders.
+    if (alamo_format::vertex_format_needs_skin_remap(sub.vertex_format_name)) {
+        alamo_format::apply_skin_bone_remap(sub);
     }
 
     out.submeshes.push_back(std::move(sub));

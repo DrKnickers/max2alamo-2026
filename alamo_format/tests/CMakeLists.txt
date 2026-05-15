@@ -19,6 +19,7 @@ add_executable(alamo_format_tests
     legacy_clip_scan_test.cpp
     shadow_volume_check_test.cpp
     collision_tree_test.cpp
+    skin_bone_remap_test.cpp
     vertex_format_selector_test.cpp
 )
 target_link_libraries(alamo_format_tests PRIVATE alamo_format Catch2::Catch2WithMain)
