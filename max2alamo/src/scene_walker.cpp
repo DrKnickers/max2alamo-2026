@@ -526,6 +526,68 @@ void validate_shadow_volume_if_applicable(INode* inode,
                   r.non_manifold_edge_count);
 }
 
+// Phase 9.2: warn if a mesh is tagged Alamo_Collision_Enabled but none
+// of its submeshes use the MeshCollision.fx shader. Vanilla collision
+// meshes always pair the flag with the shader (verified in Phase 4c's
+// 0x402 decoder cross-check). A mismatch usually means the modder
+// checked "Enable Collision" but forgot to set the shader override --
+// the resulting .alo carries the collision flag + tree but renders as
+// a visible mesh in-engine instead of being treated as invisible
+// collision geometry. Warn-not-abort: export continues.
+constexpr const char* kShaderMeshCollision = "MeshCollision.fx";
+
+void validate_collision_shader_if_applicable(alamo_format::ExportMesh& out)
+{
+    if (!out.is_collision) return;
+    if (out.submeshes.empty()) return;
+
+    bool any_collision_shader = false;
+    for (const auto& sub : out.submeshes) {
+        if (sub.material.shader_name == kShaderMeshCollision) {
+            any_collision_shader = true;
+            break;
+        }
+    }
+    if (any_collision_shader) return;
+
+    // Construct the warning string. Quote the shader name the mesh
+    // currently uses so the modder knows what to change.
+    std::ostringstream os;
+    os << "WARNING: collision mesh '" << out.name
+       << "' has Alamo_Collision_Enabled = true but uses shader '"
+       << out.submeshes.front().material.shader_name
+       << "' instead of '" << kShaderMeshCollision
+       << "'. The engine will treat it as a collision mesh per the 0x402 "
+       << "flag, but the rendering pipeline will draw it visibly. "
+       << "Set Alamo_Shader_Name = " << kShaderMeshCollision
+       << " on the node (or assign a DXMaterial referencing that .fx).";
+    out.warnings.push_back(os.str());
+
+    std::wstring wname;
+    {
+        const int n = MultiByteToWideChar(CP_UTF8, 0, out.name.data(),
+                                          static_cast<int>(out.name.size()),
+                                          nullptr, 0);
+        wname.resize(static_cast<std::size_t>(n));
+        MultiByteToWideChar(CP_UTF8, 0, out.name.data(),
+                            static_cast<int>(out.name.size()),
+                            wname.data(), n);
+    }
+    std::wstring wshader;
+    {
+        const std::string& s = out.submeshes.front().material.shader_name;
+        const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(),
+                                          static_cast<int>(s.size()),
+                                          nullptr, 0);
+        wshader.resize(static_cast<std::size_t>(n));
+        MultiByteToWideChar(CP_UTF8, 0, s.data(),
+                            static_cast<int>(s.size()),
+                            wshader.data(), n);
+    }
+    listener_warn(_T("max2alamo: WARNING: collision mesh '%s' has Alamo_Collision_Enabled = true but uses shader '%s' instead of 'MeshCollision.fx'. Set Alamo_Shader_Name = MeshCollision.fx to fix.\n"),
+                  wname.c_str(), wshader.c_str());
+}
+
 alamo_format::skin::VertexBinding
 resolve_multi_bone(const SkinContext& ctx, int vert_idx)
 {
@@ -693,6 +755,10 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh,
     // .export.log + MAXScript Listener; export continues. Matches the
     // legacy PG max2alamo exporter's warn-don't-abort behaviour.
     validate_shadow_volume_if_applicable(node_inode, out);
+
+    // Phase 9.2: warn if Alamo_Collision_Enabled is set but the shader
+    // isn't MeshCollision.fx. Same warn-not-abort policy.
+    validate_collision_shader_if_applicable(out);
 
     return true;
 }
