@@ -37,6 +37,16 @@ set(MAX_SDK_LIB "${MAX_SDK_DIR}/lib/x64/Release")
 
 # --- The plugin ------------------------------------------------------------
 
+# Generate max2alamo.rc from the @PROJECT_VERSION_*@ template so the .dle's
+# embedded Windows VersionInfo (visible via right-click -> Properties ->
+# Details) matches the top-level project(VERSION ...) value. Regenerated
+# automatically when the project version is bumped and CMake is re-run.
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/max2alamo.rc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/max2alamo.rc"
+    @ONLY
+)
+
 add_library(max2alamo SHARED
     src/plugin_entry.cpp
     src/alo_export.cpp
@@ -46,7 +56,7 @@ add_library(max2alamo SHARED
     src/alamo_proxy_helper.cpp
     src/legacy_clip_importer.cpp
     resources/max2alamo.def
-    resources/max2alamo.rc
+    "${CMAKE_CURRENT_BINARY_DIR}/max2alamo.rc"
     resources/utility_dialogs.rc
 )
 
