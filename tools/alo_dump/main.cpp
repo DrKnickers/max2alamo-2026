@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include "alamo_format/version.h"
+
 using namespace alamo_format;
 
 namespace {
@@ -35,7 +37,10 @@ Options parse_args(int argc, char** argv) {
     Options o;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if (a == "--brief") {
+        if (a == "--version" || a == "-v") {
+            std::printf("alo_dump %s\n", kVersion);
+            std::exit(EXIT_SUCCESS);
+        } else if (a == "--brief") {
             o.brief = true;
         } else if (a == "--max-depth" && i + 1 < argc) {
             o.max_depth = std::atoi(argv[++i]);
@@ -50,7 +55,7 @@ Options parse_args(int argc, char** argv) {
         }
     }
     if (o.path.empty()) {
-        std::fprintf(stderr, "usage: alo_dump <file.alo> [--brief] [--max-depth N]\n");
+        std::fprintf(stderr, "usage: alo_dump <file.alo> [--brief] [--max-depth N] [--version]\n");
         std::exit(EXIT_FAILURE);
     }
     return o;

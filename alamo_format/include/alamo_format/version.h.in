@@ -1,0 +1,14 @@
+#pragma once
+
+// Auto-generated from version.h.in at CMake configure time. Do NOT edit
+// the generated copy under build/generated/; bump the version by
+// editing project(VERSION ...) in the top-level CMakeLists.txt.
+
+namespace alamo_format {
+
+constexpr const char* kVersion       = "@max2alamo_2026_VERSION@";
+constexpr int         kVersionMajor  = @max2alamo_2026_VERSION_MAJOR@;
+constexpr int         kVersionMinor  = @max2alamo_2026_VERSION_MINOR@;
+constexpr int         kVersionPatch  = @max2alamo_2026_VERSION_PATCH@;
+
+}  // namespace alamo_format
