@@ -36,4 +36,21 @@ int ImportLegacyClipsFromFile(const TCHAR* file_path,
 // file.
 void MaybeImportLegacyClipsFromCurrentScene(Interface* ip);
 
+// Register / unregister a process-lifetime NOTIFY_FILE_POST_OPEN
+// callback that runs the legacy clip importer on every file-open,
+// regardless of whether the Alamo Utility / Animation Settings rollout
+// is currently visible. Phase 11c shipped with this hook bound to the
+// rollout's `BeginEditParams` / `EndEditParams` lifecycle, which meant
+// the importer only ran for users who had clicked Utilities -> Alamo
+// Utility before opening a legacy .max file. The standalone hook makes
+// the importer transparent: open a legacy .max and clips just appear.
+//
+// Idempotent w.r.t. the rollout-bound hook in alamo_utility.cpp --
+// the importer is a no-op when modern Alamo_Anim_Clips user-props are
+// already present, so double-invocation is harmless.
+//
+// Called by LibInitialize / LibShutdown in plugin_entry.cpp.
+void RegisterLegacyClipImportNotifications();
+void UnregisterLegacyClipImportNotifications();
+
 }  // namespace max2alamo

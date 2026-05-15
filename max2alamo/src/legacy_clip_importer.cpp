@@ -165,4 +165,25 @@ void MaybeImportLegacyClipsFromCurrentScene(Interface* ip)
     }
 }
 
+// Standalone notification handler -- runs the legacy clip importer on
+// every NOTIFY_FILE_POST_OPEN regardless of UI state. The void* param
+// is unused (Max's RegisterNotification API requires a callback of
+// shape `void(*)(void*, NotifyInfo*)`; we pass nullptr at registration).
+static void OnFilePostOpenStandalone(void* /*unused*/, NotifyInfo* /*info*/)
+{
+    MaybeImportLegacyClipsFromCurrentScene(GetCOREInterface());
+}
+
+void RegisterLegacyClipImportNotifications()
+{
+    RegisterNotification(OnFilePostOpenStandalone, nullptr,
+                         NOTIFY_FILE_POST_OPEN);
+}
+
+void UnregisterLegacyClipImportNotifications()
+{
+    UnRegisterNotification(OnFilePostOpenStandalone, nullptr,
+                           NOTIFY_FILE_POST_OPEN);
+}
+
 }  // namespace max2alamo

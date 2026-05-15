@@ -778,3 +778,62 @@ TEST_CASE("ExportSubmesh::vertex_format_name flows through to 0x10002 (Phase 10)
     }
 }
 
+namespace {
+
+// Collect every 0x10006 chunk in the tree and return its payload
+// decoded as a uint32 vector (the skin-bone-remap table).
+std::vector<std::vector<std::uint32_t>>
+collect_skin_bone_remaps(const std::vector<ChunkNode>& roots) {
+    std::vector<std::vector<std::uint32_t>> out;
+    std::function<void(const ChunkNode&)> walk = [&](const ChunkNode& n) {
+        if (n.id == 0x10006u && !n.is_container) {
+            const auto& p = n.payload;
+            std::vector<std::uint32_t> remap;
+            remap.reserve(p.size() / 4);
+            for (std::size_t i = 0; i + 4 <= p.size(); i += 4) {
+                std::uint32_t v;
+                std::memcpy(&v, p.data() + i, 4);
+                remap.push_back(v);
+            }
+            out.push_back(std::move(remap));
+        }
+        if (n.is_container) {
+            for (const auto& c : n.children) walk(c);
+        }
+    };
+    for (const auto& r : roots) walk(r);
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("ExportSubmesh::skin_bone_remap flows through to 0x10006 (Phase 10.5)") {
+    SECTION("empty skin_bone_remap omits the 0x10006 chunk") {
+        ExportScene s = minimal_cube_scene();
+        REQUIRE(s.meshes[0].submeshes[0].skin_bone_remap.empty());
+        auto tree = build_alo(s);
+        auto remaps = collect_skin_bone_remaps(tree);
+        REQUIRE(remaps.empty());
+    }
+    SECTION("populated skin_bone_remap emits one 0x10006 with the right payload") {
+        ExportScene s = minimal_cube_scene();
+        s.meshes[0].submeshes[0].skin_bone_remap = {7u, 0u, 12u};
+        auto tree = build_alo(s);
+        auto remaps = collect_skin_bone_remaps(tree);
+        REQUIRE(remaps.size() == 1);
+        REQUIRE(remaps[0] == std::vector<std::uint32_t>{7u, 0u, 12u});
+    }
+    SECTION("multi-submesh: each gets its own 0x10006") {
+        ExportScene s = minimal_cube_scene();
+        s.meshes[0].submeshes[0].skin_bone_remap = {5u, 8u};
+        ExportSubmesh sub2 = s.meshes[0].submeshes[0];
+        sub2.skin_bone_remap = {3u, 11u, 4u};
+        s.meshes[0].submeshes.push_back(sub2);
+        auto tree = build_alo(s);
+        auto remaps = collect_skin_bone_remaps(tree);
+        REQUIRE(remaps.size() == 2);
+        REQUIRE(remaps[0] == std::vector<std::uint32_t>{5u, 8u});
+        REQUIRE(remaps[1] == std::vector<std::uint32_t>{3u, 11u, 4u});
+    }
+}
+
