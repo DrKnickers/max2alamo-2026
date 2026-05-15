@@ -30,6 +30,7 @@ add_subdirectory(tools/alo_dump)
 add_subdirectory(tools/alo_roundtrip)
 add_subdirectory(tools/alo_synth)
 add_subdirectory(tools/ala_typed_roundtrip)
+add_subdirectory(tools/ala_diff)
 
 # The Max plugin only configures when the SDK is found locally. The Max SDK
 # is not redistributable, so CI cannot build it; see docs/build.md for the
