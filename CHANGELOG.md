@@ -66,12 +66,13 @@ First pre-1.0 release. Signals "format library + Max plugin feature-complete, aw
 - The `.dle` Max plugin is built locally only; Max SDK is non-redistributable so CI cannot ship it. Each GitHub Release attaches a manually-built `.dle` per `docs/release.md`.
 - *(Phase 9.2 lands the collision-tree writer; this is no longer a known limitation as of v0.9.0.)*
 
-### Phase 9.2 — collision-tree writer (pre-v0.9.0)
+### Phase 9.2 — collision-tree writer + shader-mismatch validator (pre-v0.9.0)
 
 - **Resolved collision tree `0x1200`-`0x1203` internals** via Petrolution's published spec (<https://modtools.petrolution.net/docs/AloFileFormat>). Full chunk hierarchy is now documented in [`docs/format-notes.md`](docs/format-notes.md) "Collision tree (`0x1200`, Phase 9.2)".
 - New `alamo_format::build_collision_tree` builder in [`alamo_format/include/alamo_format/collision_tree.h`](alamo_format/include/alamo_format/collision_tree.h) + [`.cpp`](alamo_format/src/collision_tree.cpp). Median-axis-split AABB tree with leaf threshold of 4 triangles. Pure C++17; no Max-SDK dependency.
 - Wired into [`alo_build.cpp::build_submesh_geometry`](alamo_format/src/alo_build.cpp) — collision meshes (those with `ExportMesh::is_collision = true`) now emit a `0x1200` child inside their `0x10000` geometry block. Non-collision meshes are unchanged.
 - 8 new Catch2 cases / 100 assertions cover the chunk-level layout, primitive-index preservation across the tree, 0x1201 mini-chunk structure, byte3 quantization monotonicity, degenerate-bbox edge case, and counter-consistency (header `nNodes` matches actual record count).
+- **Collision-shader-mismatch validator** in [`scene_walker.cpp::validate_collision_shader_if_applicable`](max2alamo/src/scene_walker.cpp). Vanilla collision meshes always pair `isCollisionMesh=1` (0x402 flag) with shader `MeshCollision.fx`. Modders who check "Enable Collision" but forget to set the shader (default = `MeshAlpha.fx`) get a non-fatal warning to `.export.log` + the MAXScript Listener pointing at the fix. Same warn-not-abort policy as the Phase 12 shadow-volume validator.
 
 ### Phase 9.1 — format spec close-out (pre-v0.9.0)
 
