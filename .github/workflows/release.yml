@@ -1,0 +1,110 @@
+name: Release
+
+# Triggered when a vMAJOR.MINOR.PATCH tag lands on main. Builds the
+# SDK-independent targets (format library + CLIs + tests), uploads the
+# CLI executables as release artifacts, and creates a draft GitHub
+# Release whose body is the matching CHANGELOG.md section.
+#
+# The .dle Max plugin is NOT built here -- the Max SDK is non-
+# redistributable, so the plugin must be built locally per docs/build.md
+# and attached to the draft release manually before publishing. See
+# docs/release.md for the full procedure.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'   # pre-release tags like v0.9.0-rc.1
+
+permissions:
+  contents: write   # required to create + upload to a GitHub Release
+
+jobs:
+  build-and-release:
+    name: Build artifacts + create draft release
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (CMake)
+        run: cmake -B build -S . -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON
+
+      - name: Build (Release)
+        run: cmake --build build --config Release --parallel
+
+      - name: Run unit tests
+        working-directory: build
+        run: ctest --build-config Release --output-on-failure --no-tests=error
+
+      - name: Verify CLI version matches the tag
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"          # e.g. v0.9.0
+          $expected = $tag.TrimStart('v')           # e.g. 0.9.0
+          # Drop any -rc.1 / -beta suffix for the substring match;
+          # version.h holds the bare MAJOR.MINOR.PATCH from CMake.
+          $expected = $expected -replace '-.*$', ''
+          $output = (& 'build\tools\alo_dump\Release\alo_dump.exe' '--version') -join "`n"
+          Write-Host "alo_dump reports: $output"
+          if ($output -notlike "*$expected*") {
+            throw "alo_dump --version output '$output' does not contain tag version '$expected'. Check top-level CMakeLists.txt project(VERSION ...)."
+          }
+          $output2 = (& 'build\tools\alo_roundtrip\Release\alo_roundtrip.exe' '--version') -join "`n"
+          Write-Host "alo_roundtrip reports: $output2"
+          if ($output2 -notlike "*$expected*") {
+            throw "alo_roundtrip --version output '$output2' does not contain tag version '$expected'."
+          }
+
+      - name: Stage release artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release-staging | Out-Null
+          Copy-Item 'build\tools\alo_dump\Release\alo_dump.exe' release-staging\
+          Copy-Item 'build\tools\alo_roundtrip\Release\alo_roundtrip.exe' release-staging\
+          Copy-Item 'build\alamo_format\Release\alamo_format.lib' release-staging\
+          Get-ChildItem release-staging
+
+      - name: Extract CHANGELOG section for this tag
+        id: changelog
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v')   # e.g. 0.9.0
+          $content = Get-Content CHANGELOG.md -Raw
+          # Match the section starting at "## [<tag>]" up to the next
+          # "## [" header or end-of-file. The dotall (?s) flag makes . match newlines.
+          $pattern = "(?s)## \[$([regex]::Escape($tag))\][^\n]*\n(.*?)(?:\n## \[|\z)"
+          $match = [regex]::Match($content, $pattern)
+          if (-not $match.Success) {
+            throw "CHANGELOG.md has no '## [$tag]' section. Add one before tagging."
+          }
+          $body = $match.Groups[1].Value.Trim()
+          # GH Actions multi-line output:
+          $delim = "EOF_$(New-Guid)"
+          "body<<$delim" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $body | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $delim | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Create draft GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          body: |
+            ${{ steps.changelog.outputs.body }}
+
+            ---
+
+            **The `.dle` Max plugin is NOT in this artifact set yet.** The Max SDK is non-redistributable so CI cannot build it; the maintainer attaches a locally-built `.dle` before publishing. If you're seeing this draft message in a published release, please open an issue.
+
+            See [`docs/release.md`](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/release.md) for the full release procedure.
+          draft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            release-staging/alo_dump.exe
+            release-staging/alo_roundtrip.exe
+            release-staging/alamo_format.lib
+
+      # Note: the max2alamo .dle is intentionally NOT built here. See
+      # docs/release.md for the manual build + attach + publish procedure.

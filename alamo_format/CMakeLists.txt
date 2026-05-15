@@ -13,7 +13,10 @@ add_library(alamo_format STATIC
     src/shadow_volume_check.cpp
 )
 
-target_include_directories(alamo_format PUBLIC include)
+target_include_directories(alamo_format PUBLIC
+    include
+    "${CMAKE_BINARY_DIR}/generated"   # Phase 9: configure_file-generated version.h
+)
 target_compile_features(alamo_format PUBLIC cxx_std_17)
 
 add_library(alamo_format::alamo_format ALIAS alamo_format)

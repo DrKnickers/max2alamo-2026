@@ -10,6 +10,7 @@
 // correctness oracle for the format library — every byte should round-trip.
 
 #include "alamo_format/chunk_tree.h"
+#include "alamo_format/version.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -129,10 +130,15 @@ int main(int argc, char** argv) {
         std::fprintf(stderr,
             "usage:\n"
             "  alo_roundtrip <file.alo>      round-trip a single file\n"
-            "  alo_roundtrip --dir <path>    recurse and summarize\n");
+            "  alo_roundtrip --dir <path>    recurse and summarize\n"
+            "  alo_roundtrip --version       print version and exit\n");
         return EXIT_FAILURE;
     }
     std::string arg1 = argv[1];
+    if (arg1 == "--version" || arg1 == "-v") {
+        std::printf("alo_roundtrip %s\n", alamo_format::kVersion);
+        return EXIT_SUCCESS;
+    }
     if (arg1 == "--dir") {
         if (argc < 3) {
             std::fprintf(stderr, "alo_roundtrip: --dir requires a path\n");
