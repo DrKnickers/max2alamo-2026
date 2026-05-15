@@ -1,3 +1,4 @@
+#include <functional>
 #include <catch2/catch_test_macros.hpp>
 
 #include "alamo_format/alo_build.h"
@@ -719,3 +720,61 @@ TEST_CASE("Mixed scene (mesh + light + proxy) round-trips byte-identical via wri
     auto bytes2 = write_chunk_tree(reparsed);
     REQUIRE(bytes2 == bytes);
 }
+
+
+namespace {
+
+// Helper: scan the chunk tree depth-first for every 0x10002 leaf and
+// return their cstring payloads. Used by the Phase 10 wiring tests
+// to assert that ExportSubmesh::vertex_format_name flows through the
+// writer.
+std::vector<std::string> collect_vertex_format_strings(const std::vector<ChunkNode>& roots) {
+    std::vector<std::string> out;
+    std::function<void(const ChunkNode&)> walk = [&](const ChunkNode& n) {
+        if (n.id == 0x10002u && !n.is_container) {
+            const auto& p = n.payload;
+            std::size_t nul = 0;
+            while (nul < p.size() && p[nul] != 0u) ++nul;
+            out.emplace_back(reinterpret_cast<const char*>(p.data()), nul);
+        }
+        if (n.is_container) {
+            for (const auto& c : n.children) walk(c);
+        }
+    };
+    for (const auto& r : roots) walk(r);
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("ExportSubmesh::vertex_format_name flows through to 0x10002 (Phase 10)") {
+    SECTION("empty field defaults to alD3dVertNU2 (Phase 4 back-compat)") {
+        ExportScene s = minimal_cube_scene();
+        REQUIRE(s.meshes[0].submeshes[0].vertex_format_name.empty());
+        auto tree = build_alo(s);
+        auto strings = collect_vertex_format_strings(tree);
+        REQUIRE(strings.size() == 1);
+        REQUIRE(strings[0] == "alD3dVertNU2");
+    }
+    SECTION("populated field is emitted verbatim") {
+        ExportScene s = minimal_cube_scene();
+        s.meshes[0].submeshes[0].vertex_format_name = "alD3dVertRSkinNU2";
+        auto tree = build_alo(s);
+        auto strings = collect_vertex_format_strings(tree);
+        REQUIRE(strings.size() == 1);
+        REQUIRE(strings[0] == "alD3dVertRSkinNU2");
+    }
+    SECTION("multiple submeshes get independent strings") {
+        ExportScene s = minimal_cube_scene();
+        s.meshes[0].submeshes[0].vertex_format_name = "alD3dVertRSkinNU2U3U3";
+        ExportSubmesh sub2 = s.meshes[0].submeshes[0];
+        sub2.vertex_format_name = "alD3dVertGrass";
+        s.meshes[0].submeshes.push_back(sub2);
+        auto tree = build_alo(s);
+        auto strings = collect_vertex_format_strings(tree);
+        REQUIRE(strings.size() == 2);
+        REQUIRE(strings[0] == "alD3dVertRSkinNU2U3U3");
+        REQUIRE(strings[1] == "alD3dVertGrass");
+    }
+}
+

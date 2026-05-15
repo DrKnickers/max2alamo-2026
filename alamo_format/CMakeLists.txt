@@ -12,6 +12,7 @@ add_library(alamo_format STATIC
     src/legacy_clip_scan.cpp
     src/shadow_volume_check.cpp
     src/collision_tree.cpp
+    src/vertex_format_selector.cpp
 )
 
 target_include_directories(alamo_format PUBLIC
