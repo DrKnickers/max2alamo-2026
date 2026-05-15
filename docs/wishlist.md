@@ -47,9 +47,11 @@ The wished-for workflow: keep the whole unit (hull + every hardpoint) in one `.m
 
 ---
 
-## 2. Collision-tree writer for `0x1200` chunks
+## 2. Collision-tree writer for `0x1200` chunks — ✅ SHIPPED in Phase 9.2
 
-**Status:** partially scoped (format-level investigation done Phase 9.1; full byte-level decode pending). Not blocking v0.9.0 release.
+(This entry is kept briefly for history; the implementation lives at `alamo_format/include/alamo_format/collision_tree.h` + `.cpp`, the spec is documented in `docs/format-notes.md` "Collision tree (`0x1200`, Phase 9.2)", and the writer is wired into `alo_build.cpp::build_submesh_geometry` for any `ExportMesh` with `is_collision = true`. Will be deleted from this file in a future cleanup once it's clear the entry isn't needed for ongoing context.)
+
+**Original status:** partially scoped (format-level investigation done Phase 9.1; full byte-level decode pending). Not blocking v0.9.0 release.
 
 **Use case.** Every vanilla EaW + FoC collision mesh ships with a `0x1200` collision-tree container (142/142 in a 100-file FoC sample). Our exporter currently omits it; modder-shipped exports still collide in-game (engine builds a fallback at load time), but bypassing the runtime build would shave a tiny load-time cost and, more importantly, would put our output structurally identical to vanilla content — which matters for tools like Mike Lankamp's `alamo2max.ms` round-trip and AloViewer's "view as authored" expectation.
 

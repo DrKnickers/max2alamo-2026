@@ -11,6 +11,7 @@ add_library(alamo_format STATIC
     src/anim_clip_list.cpp
     src/legacy_clip_scan.cpp
     src/shadow_volume_check.cpp
+    src/collision_tree.cpp
 )
 
 target_include_directories(alamo_format PUBLIC

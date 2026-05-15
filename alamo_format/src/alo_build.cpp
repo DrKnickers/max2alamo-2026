@@ -1,9 +1,12 @@
 #include "alamo_format/alo_build.h"
 
 #include "alamo_format/chunk_io.h"
+#include "alamo_format/collision_tree.h"
 #include "alamo_format/shader_table.h"
 
+#include <algorithm>
 #include <cstring>
+#include <limits>
 
 namespace alamo_format {
 
@@ -358,11 +361,48 @@ ChunkNode build_submesh_material(const ExportSubmesh& sub) {
     return make_container(0x10100, std::move(kids));
 }
 
+// Phase 9.2: build the 0x1200 collision-tree subtree from a submesh's
+// triangles + parent mesh AABB. Returns nullopt-equivalent (empty
+// ChunkNode discardable by the caller) iff the submesh has no usable
+// triangles. The caller invokes this only for collision meshes.
+ChunkNode build_collision_tree_for_submesh(const ExportSubmesh& sub,
+                                           const ExportMesh&    parent)
+{
+    std::vector<CollisionTriangle> tris;
+    const std::size_t n_tris = sub.indices.size() / 3;
+    tris.reserve(n_tris);
+    for (std::size_t t = 0; t < n_tris; ++t) {
+        const std::uint32_t i0 = sub.indices[t * 3 + 0];
+        const std::uint32_t i1 = sub.indices[t * 3 + 1];
+        const std::uint32_t i2 = sub.indices[t * 3 + 2];
+        if (i0 >= sub.vertices.size() ||
+            i1 >= sub.vertices.size() ||
+            i2 >= sub.vertices.size()) continue;
+        const auto& p0 = sub.vertices[i0].position;
+        const auto& p1 = sub.vertices[i1].position;
+        const auto& p2 = sub.vertices[i2].position;
+        CollisionTriangle ct;
+        ct.face_index = static_cast<std::uint16_t>(t);
+        for (int a = 0; a < 3; ++a) {
+            ct.aabb_min[a] = std::min({p0[a], p1[a], p2[a]});
+            ct.aabb_max[a] = std::max({p0[a], p1[a], p2[a]});
+            ct.centroid[a] = (p0[a] + p1[a] + p2[a]) * (1.0f / 3.0f);
+        }
+        tris.push_back(ct);
+    }
+    return build_collision_tree(tris, parent.bbox_min, parent.bbox_max);
+}
+
 // 0x10000 (Submesh data): sizes + format + vertices + faces. Sibling of
 // 0x10100 above. Each vertex carries its own bone bindings (Phase 5b);
 // the walker fills them in for both static (rigid attachment to per-mesh
 // bone) and skinned (dominant bone per vertex) cases.
-ChunkNode build_submesh_geometry(const ExportSubmesh& sub)
+//
+// Phase 9.2: if the parent mesh's is_collision flag is set, append a
+// 0x1200 collision-tree child at the end of the geometry block (matches
+// vanilla layout per Petrolution spec).
+ChunkNode build_submesh_geometry(const ExportSubmesh& sub,
+                                 const ExportMesh*    parent_for_collision)
 {
     std::vector<ChunkNode> kids;
 
@@ -392,6 +432,15 @@ ChunkNode build_submesh_geometry(const ExportSubmesh& sub)
     // 0x10004: face indices (3 x uint16 per triangle).
     kids.push_back(build_face_chunk(sub.indices));
 
+    // 0x1200: collision tree (Phase 9.2). Only attached when the parent
+    // mesh is flagged as a collision mesh. Without one, the engine builds
+    // a runtime BVH at load time -- so this is an optimization, not a
+    // correctness fix. Vanilla content always carries it (142/142 in a
+    // 100-file FoC sample).
+    if (parent_for_collision && parent_for_collision->is_collision) {
+        kids.push_back(build_collision_tree_for_submesh(sub, *parent_for_collision));
+    }
+
     return make_container(0x10000, std::move(kids));
 }
 
@@ -409,7 +458,7 @@ ChunkNode build_mesh(const ExportMesh& mesh) {
     // SIBLINGS at this level, alternating per submesh. NOT nested.
     for (const auto& sub : mesh.submeshes) {
         kids.push_back(build_submesh_material(sub));
-        kids.push_back(build_submesh_geometry(sub));
+        kids.push_back(build_submesh_geometry(sub, &mesh));
     }
     return make_container(0x400, std::move(kids));
 }

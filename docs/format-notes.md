@@ -181,7 +181,7 @@ Geometry block (`0x10000`, container — sibling of `0x10100` inside `0x400`):
 | `0x10005` *or* `0x10007` | leaf | vertex data (see vertex layouts below) |
 | `0x10004` | leaf | face data: `faceCount` × `uint16[3]` indices |
 | `0x10006` | leaf, optional | bone mapping table: `uint32[]` of length `chunk_size / 4` |
-| `0x1200` | container, optional, only on collision meshes | collision tree |
+| `0x1200` | container, on collision meshes | collision tree (full spec below; Phase 9.2 writer in `alamo_format/src/collision_tree.cpp`) |
 
 **`0x10001` is fixed-size 128 bytes** (Phase 4c correction): Mike's reader only consumes the first 8 bytes (counts) and uses `Next()` to skip the rest, but AloViewer rejects shorter chunks. Same fixed-size-with-reserved-tail pattern as `0x201` and `0x402`. Confirmed across the vanilla corpus.
 
@@ -417,6 +417,54 @@ For ZAxis modes (3/4/5), local +Z is the rotation axis and stays upright -- the 
 
 ---
 
+### Collision tree (`0x1200`, Phase 9.2)
+
+Per Petrolution's spec (<https://modtools.petrolution.net/docs/AloFileFormat>), the `0x1200` container sits inside a submesh's `0x10000` geometry block and carries a precomputed AABB tree the engine uses for collision queries. Three children:
+
+**`0x1201` (tree info) — 40 bytes**, structured as four mini-chunks (the 1-byte-ID + 1-byte-size mini-chunk format used elsewhere in `.alo`):
+
+| Mini-chunk | Payload | Bytes |
+|---|---|---|
+| `0x00` | `float3 collisionBoxMin` | 12 |
+| `0x01` | `float3 collisionBoxMax` | 12 |
+| `0x02` | `dword nNodes` | 4 |
+| `0x03` | `dword nPrimitives` | 4 |
+
+Total: `(2 + 12) × 2 + (2 + 4) × 2 = 40` bytes. The min/max pair establishes the reference frame for the byte3 quantization in `0x1202`. `nNodes` is the count of records in `0x1202`; `nPrimitives` is the count of uint16 entries in `0x1203`.
+
+**`0x1202` (tree nodes) — `nNodes × 10` bytes**, each record:
+
+```
+byte3   min          (3 bytes; 8-bit quantization relative to bboxMin/Max)
+byte3   max          (3 bytes; likewise)
+word    nPrimitives  (uint16 LE)
+word    link         (uint16 LE)
+```
+
+If `nPrimitives == 0` → internal node; `link` indexes the first child in `0x1202`. If `nPrimitives > 0` → leaf node; `link` is the starting index in `0x1203` and `nPrimitives` consecutive face indices belong to this leaf. The exact child-pair convention for internal nodes (implicit-adjacent `link+1` vs. explicit-stride) is not stated in the Petrolution doc; our writer uses implicit-adjacent (`link` = left child, `link+1` = right child) because depth-first flattening lays them contiguously.
+
+**`0x1203` (triangle mapping) — `nPrimitives × 2` bytes**, `uint16[]` face indices into the mesh's `0x10004` face buffer. Each entry maps a tree-leaf slot to an actual triangle.
+
+#### Quantization (byte3 fields in `0x1202`)
+
+A coordinate `v` on axis `a` quantizes as:
+
+```
+t = (v - bboxMin[a]) / (bboxMax[a] - bboxMin[a])
+byte = clamp(round(t × 255), 0, 255)
+```
+
+Edge cases: extent-zero axes quantize to 0; out-of-range values clamp.
+
+#### Practical notes
+
+- AloViewer (`src/Assets/Models.cpp:164-169`) and Mike Lankamp's importer (`alamo2max.ms:528`) deliberately `.skip()` the entire `0x1200` container -- it's an engine-internal optimization, not needed by viewers or importers.
+- Vanilla content carries `0x1200` on 100% of collision meshes (142/142 across a 100-file FoC sample). Our writer matches this convention.
+- The engine has a load-time fallback for `.alo` files lacking `0x1200`: it builds a runtime BVH over the mesh's face list. Pre-9.2 exports relied on this fallback; post-9.2 exports ship the tree directly.
+- Our tree-build heuristic (median-axis split, leaf threshold = 4 triangles) is one valid choice; the engine accepts any well-formed tree -- the specific shape vanilla exporters produced is a separate question (not investigated). Total node count for our builder is in the same order of magnitude as vanilla (the X-Wing's 12-triangle collisionbox: 11 nodes vanilla, 7-11 ours depending on split bias).
+
+---
+
 ### Shadow-volume closed-manifold validation (Phase 12)
 
 The Alamo engine renders stencil shadows from meshes whose material uses `MeshShadowVolume.fx` or `RSkinShadowVolume.fx`. The stencil algorithm requires every edge of the mesh to be shared by exactly two triangles -- a closed 2-manifold -- otherwise the resulting shadow has visible holes / "light leaks".
@@ -561,7 +609,7 @@ When both conventions are authored on the same scene, **the multi-clip path wins
 | 2b | `0x201` reserved 124 bytes: confirmed all-zero across sampled files. **Resolved.** | --- |
 | 3 | ~~`0x10002` vertex format chunk payload: just the format string? Format flags?~~ **Resolved Phase 4b:** just the null-terminated format-name string (e.g. `alD3dVertNU2\0`). Confirmed in `RV_XWING.ALO` (multiple instances dumped) and across the corpus. |
 | 4 | Format-version indicator: how does the engine distinguish EaW-style vs FoC-style `.ala` for a given file? | Phase 8: presence/absence of mini-chunks 11/12/13 in `0x1001` is the signal (per `alamo2max.ms:855-861`). |
-| 5 | Collision tree (`0x1200`-`0x1203`) internal structure. | **Phase 9.1 partial decode** (full byte-level layout deferred to v1.x): `0x1200` is a container present on 100% of vanilla collision meshes (142/142 across a 100-file FoC sample) but absent from our current exports. Both AloViewer (`src/Assets/Models.cpp:164-169`) and Mike Lankamp's importer (`alamo2max.ms:528`) deliberately call `.skip()` past the entire container -- collision is engine-internal. Empirical chunk-tree shape: **`0x1201` is always 40 bytes** regardless of mesh complexity (fixed-size header -- likely root-AABB + global counts); **`0x1202` scales at ~12 bytes per triangle** (variable-size internal AABB-tree node body with quantized bboxes -- the X-Wing's collisionbox shows 8-bit-quantized fields with the pattern `00 00 00 ff ff ff` repeating); **`0x1203` is exactly `faceCount × uint16`** (confirmed across multiple samples: 330 tris → 660 bytes, 252 → 504, 374 → 748 -- a face-index permutation list, ordering faces into the tree's leaf groupings). Full byte-level decode of `0x1202` would require either Ghidra against EaW's `gameobject.dll` or more empirical-record-diffing on a larger sample. **Practical impact:** our exports omit `0x1200` and modders have used the resulting `.alo` files for collision in-game -- the engine has a load-time fallback (presumed runtime BVH build over the mesh's face list). Tracked as a v1.x feature in `docs/wishlist.md`. |
+| 5 | ~~Collision tree (`0x1200`-`0x1203`) internal structure.~~ **Resolved Phase 9.2** via Petrolution's published spec at <https://modtools.petrolution.net/docs/AloFileFormat>. Full chunk hierarchy: `0x1201` is 4 mini-chunks (`00=float3 bboxMin`, `01=float3 bboxMax`, `02=dword nNodes`, `03=dword nPrimitives`, 40 bytes total via mini-chunk header overhead); `0x1202` is an array of 10-byte AABB-tree node records (`byte3 min, byte3 max, word nPrimitives, word link`; nodes are 8-bit-quantized relative to the parent box; `nPrimitives==0` means internal node with `link`=child index, `nPrimitives>0` means leaf with `link`=start index in 0x1203); `0x1203` is `uint16[nPrimitives]` of face indices into the mesh's 0x10004 face buffer. Our writer at `alamo_format/src/collision_tree.cpp` produces these via a median-axis-split builder (leaf threshold = 4 triangles); 8 Catch2 cases / 100 assertions cover the chunk layout, primitive preservation, and quantization edge cases. Empirical findings from Phase 9.1's pre-spec investigation all consistent with the spec (40-byte 0x1201 = 4 mini-chunks 14+14+6+6; ~12 bytes/triangle in 0x1202 = 10 bytes/record × ~1.2 records/triangle; 0x1203 size = exactly `nPrimitives × 2`). |
 | 6 | What does `_ALAMO_VERTEX_TYPE` accept as values? | Confirm via Phase 4 RE of the exporter binary if Standard-material → vertex-format inference proves insufficient. |
 | 7 | ~~Bone matrix on-disk byte order.~~ **Resolved Phase 4c:** 3 columns of 4 elements stored column-major (NOT row-major). Identity = `1,0,0,0, 0,1,0,0, 0,0,1,0`. Row-major mistake produces a degenerate transform that collapses all geometry. |
 | 8 | ~~`0x10100` and `0x10000` nested?~~ **Resolved Phase 4c:** they are SIBLINGS inside `0x400`, alternating per submesh (`0x10100` material then `0x10000` geometry). NOT nested. |
