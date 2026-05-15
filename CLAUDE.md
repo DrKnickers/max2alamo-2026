@@ -307,6 +307,7 @@ These principles are not license to:
 | Format-spec disagreement                   | Direct observation of the corpus wins            |
 | User corrects you                          | Internalize lesson; fold into `CLAUDE.md` if general |
 | Bug report                                 | Fix it; don't ask permission                     |
+| Feature wish surfaced (not in scope yet)   | Capture in `docs/wishlist.md` -- use case + sketch + open questions |
 | Simple fix                                 | Don't over-engineer; skip the elegance pass      |
 | Marking a task done                        | Quote proof. *"Would a staff engineer approve?"* |
 | Phase ships                                | Update `docs/development-log.md` in the same PR  |
