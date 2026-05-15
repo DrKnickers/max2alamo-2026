@@ -64,53 +64,53 @@ Two binary outcomes:
    the `0x10006` chunk. Load in AloViewer and in EaW/FoC. Does the
    skinning still work? Are bone influences mapped correctly?
 
-### Fixture preparation (Claude can do this for you ahead of the session)
+### Fixtures
 
-A small Python helper `scripts/hex_edit_alo_chunks.py` (write this on
-the day) that supports two operations:
+The 5 variants below have been pre-built at
+`tests/fixtures/phase-10-prereq/` (gitignored — derived from
+`tests/corpus/eaw/EI_NAVYTROOPER.ALO`, which is Lucasfilm IP). Each
+differs from `01_control.ALO` by exactly one chunk-level change:
 
-- `--rewrite-vfmt <input.alo> <new_name> <output.alo>` — finds every
-  `0x10002` leaf chunk and rewrites its cstring payload to `<new_name>`.
-  Pads with nulls to keep payload size constant (so downstream offsets
-  don't shift) — guarded by a check that `len(new_name) + 1 <=
-  original_chunk_size`.
-- `--strip-skin-remap <input.alo> <output.alo>` — finds every `0x10006`
-  leaf chunk inside `0x10000` submesh-data containers and removes it,
-  rewriting parent container sizes accordingly.
-
-Pick a small candidate file with both properties (skinned + has 0x10006).
-Suggested from the corpus survey:
-
-- **For R7**: any small file containing exactly one `RSkinBumpColorize.fx`
-  submesh. Survey shows 217 candidates; pick one with vertex count
-  < 5000 to keep validation eyeball-friendly.
-- **For R8**: same file works.
-
-Variants to produce:
-
-| Variant | `0x10002` string | `0x10006` chunk | Expected AloViewer behavior |
+| File | `0x10002` rewrite (skinned submeshes only) | `0x10006` skin-remap chunks | Tests |
 |---|---|---|---|
-| `control` | original | original | renders correctly |
-| `vfmt_b4i4` | `alD3dVertB4I4NU2U3U3` | original | renders correctly (4-bone path with weights) |
-| `vfmt_rskin_swap` | swap RSkin↔B4I4 | original | may render differently — characterize |
-| `vfmt_wrong` | `alD3dVertNU2` | original | wrong layout — should visibly break |
-| `nostrip_remap` | original | absent | does AloViewer / engine cope? |
-| `vfmt_b4i4_no_remap` | `alD3dVertB4I4NU2U3U3` | absent | does B4I4 path need 0x10006? |
+| `EI_NAVYTROOPER_01_control.ALO` | original `alD3dVertB4I4NU2` | present (2) | reference |
+| `EI_NAVYTROOPER_02_vfmt_rskin.ALO` | rewritten → `alD3dVertRSkinNU2` | present | R7: RSkin vs B4I4 family swap. RSkin reads 1 bone via packed `Normal.w`; B4I4 reads 4 bones via `BlendWeights[4]+BlendIndices`. Per vertex-data the file is already B4I4-style (4 slots populated), so the RSkin renderer will use only slot 0 — expect *visibly less smooth* skinning at joint seams. |
+| `EI_NAVYTROOPER_03_vfmt_basic_static.ALO` | rewritten → `alD3dVertNU2` | present | R7: tag skinned data as static. Vertex shader skips skinning entirely. Expect mesh to render at bind-pose positions (probably *collapsed to origin* or whatever the un-transformed vertex positions yield). |
+| `EI_NAVYTROOPER_04_no_skin_remap.ALO` | original | **stripped** | R8: does the engine require `0x10006`? If skinning works without it, our walker omitting it (as it does today) is safe. If broken — wrong bones referenced — we need a `0x10006` writer in Phase 10. |
+| `EI_NAVYTROOPER_05_vfmt_rskin_no_remap.ALO` | rewritten → `alD3dVertRSkinNU2` | **stripped** | R7+R8 combined sanity. |
+
+The 4 static submeshes in NAVYTROOPER (`alD3dVertNU2`, `alD3dVertN`)
+are left untouched in every variant — only the 2 skinned submeshes
+get rewritten. This keeps the rest of the model rendering correctly
+and isolates the variable being tested.
+
+All 5 variants round-trip cleanly through `alo_roundtrip.exe`, so
+they're well-formed chunks even after the hex edit.
+
+The fixture builder is `scripts/hex_edit_alo_chunks.py` —
+`--rewrite-vfmt --only-current <str>` filters which chunks to rewrite;
+`--strip-skin-remap` deletes 0x10006 chunks. To rebuild from a
+different control source:
+
+```
+python scripts/hex_edit_alo_chunks.py --rewrite-vfmt <in.alo> <new_name> <out.alo> [--only-current <existing_str>]
+python scripts/hex_edit_alo_chunks.py --strip-skin-remap <in.alo> <out.alo>
+```
 
 ### Procedure
 
-1. Pre-build the 6 variants on disk before opening any GUI. Each variant
-   should byte-diff from `control` *only* in the targeted chunk.
-2. Open each in AloViewer. Record observations:
+1. Open `EI_NAVYTROOPER_01_control.ALO` in AloViewer first. Note the
+   reference rendering — pose, skin smoothness, any visible deformation.
+   Take a screenshot.
+2. Open each of the remaining 4 variants. For each, observe:
    - Does it load without error?
    - Does the mesh render at all?
-   - Skin deformation — visually correct vs. degenerate (collapsed
-     vertices) vs. statically posed (no skinning)?
+   - Skin deformation — same as control / degenerate (collapsed
+     vertices) / statically posed (no skinning) / something else?
    - Any console / dialog warnings?
-3. For the variants that load in AloViewer, drop them into a real
-   EaW or FoC mod-tools build that loads at game-start. Same
-   observations.
-4. Tabulate results in this doc under "Results".
+3. For variants that load in AloViewer, drop each into a real EaW or
+   FoC mod-tools build that loads at game-start. Same observations.
+4. Fill in the "Results" section below.
 
 ### Capture format for results
 
