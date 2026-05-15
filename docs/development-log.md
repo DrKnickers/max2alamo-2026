@@ -115,6 +115,7 @@ Wiki / Discussions / Projects are disabled.
 | Format spec (working ref) | `docs/format-notes.md` |
 | Build instructions | `docs/build.md` |
 | Corpus extraction guide | `docs/corpus.md` |
+| Feature wishlist (pre-scope) | `docs/wishlist.md` -- captured ideas not yet promoted into a phase plan |
 | MEG extractor (script) | `scripts/extract-meg.ps1` |
 | Interaction-limit refresh | `scripts/renew-interaction-limits.sh`, `.github/workflows/renew-interaction-limits.yml` |
 | **Test corpus (local-only)** | `tests/corpus/eaw/`, `tests/corpus/foc/`, `tests/corpus/ala-eaw/`, `tests/corpus/ala-foc/` |
