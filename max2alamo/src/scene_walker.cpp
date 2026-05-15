@@ -17,6 +17,7 @@
 #include "alamo_format/shader_table.h"
 #include "alamo_format/skin_weights.h"
 #include "alamo_format/shadow_volume_check.h"
+#include "alamo_format/vertex_format_selector.h"
 
 #include <maxscript/maxscript.h>
 #include <maxscript/util/listener.h>
@@ -653,6 +654,14 @@ bool build_mesh(IGameNode* node, IGameMesh* gmesh,
     sub.material.shader_name  = std::move(em.shader_name);
     sub.material.base_texture = std::move(em.base_texture);
     sub.material.params       = std::move(em.params);
+    // Phase 10 (issue #75): pick the 0x10002 vertex-format-name string
+    // from the resolved shader. Empty result = unknown shader; writer
+    // falls back to "alD3dVertNU2". The pre-Phase-10 hardcode emitted
+    // "alD3dVertNU2" for every submesh, which silently broke skinned /
+    // bump / vcolor meshes -- the renderer binds the wrong vertex
+    // declaration for any shader whose vertex layout differs.
+    sub.vertex_format_name = alamo_format::vertex_format_selector::
+        default_vertex_format_for_shader(sub.material.shader_name);
     sub.vertices.reserve(static_cast<std::size_t>(face_count) * 3u);
     sub.indices.reserve(static_cast<std::size_t>(face_count) * 3u);
 
