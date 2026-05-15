@@ -177,3 +177,29 @@ Validates that meshes flagged as shadow-volume (via shader `MeshShadowVolume.fx`
 **Negative tripwire J** (manual sanity check during development): in `alamo_format/src/shadow_volume_check.cpp`, replace the `kCount != 2` filter with `< 1`. Rebuild. Re-run step 5. Expected: the warning no longer fires on the open box (the validator now incorrectly considers a single-boundary edge as closed). Confirms the topology check is keyed off the exact edge-incidence rule.
 
 **Corpus baseline** (informational, no manual action): `python scripts/check_shadow_volume_corpus.py` over EaW + FoC corpus reports ~75% pass rate (2,392 closed / 3,168 shadow submeshes across 4,132 vanilla `.alo` files). The ~25% "open" remainder is vanilla authoring noise the legacy PG exporter would have warned on too — meshes with 1–4 non-manifold edges over hundreds of triangles. The threshold is set to 75% so a regression that makes the validator over-strict (rate drops) would fire the check.
+
+### Tier 4 — Billboard orientation convention (Phase 12.1)
+
+Validates that meshes authored with `Alamo_Billboard_Mode` (or the legacy `_ALAMO_BILLBOARDS` hook) render with their visible face pointing toward the camera in-engine. The authoring rule is documented in `docs/format-notes.md` "Billboard pivot convention" — the quad's visible-face normal must point along bone-local -Y. Automated coverage: `tests/maxscript/test_phase12_1_billboards_legacy_hook.ms` exercises the back-compat code path; corpus check (`scripts/inspect_billboard_orientation.py`) confirms 14/14 vanilla PARALLEL + SUNLIGHT_GLOW meshes follow the convention exactly. The steps below cover the in-engine visual verification that no headless harness can do.
+
+1. **Open Max** (any version with the current `.dle` installed). Open the Utility panel → Alamo Utility.
+2. **In the MAXScript Listener:**
+   ```
+   resetMaxFile #noPrompt
+   p = Plane name:"BillboardTest" length:10 width:10
+   rotate p (eulerAngles 90 0 0)    -- normal goes from +Z to -Y (required pivot)
+   ResetPivot p; ResetXForm p; collapseStack p
+   setUserProp p "Alamo_Billboard_Mode" 1   -- BBT_PARALLEL
+   ```
+3. **File → Export → Alamo Object (.alo)** to a fresh path (e.g. `build/maxbatch/billboard_visual.alo`). Verify the dialog reports "Export complete".
+4. **Open the .alo in AloViewer** (https://github.com/GlyphXTools/alo-viewer; load via File → Open or drag-drop). Orbit the camera. Verify the textured quad rotates to follow the camera, always presenting its visible face. If the quad shows its back-face (untextured or alpha-key visible) or vanishes when viewed from a particular angle, the pivot rotation in step 2 was wrong -- the modder needs to rotate the mesh so its visible normal points along the bone's local -Y.
+5. **Legacy-hook back-compat check** (in MAXScript Listener):
+   ```
+   resetMaxFile #noPrompt
+   p = Plane name:"LegacyBillboardTest" length:10 width:10
+   rotate p (eulerAngles 90 0 0); ResetPivot p; ResetXForm p; collapseStack p
+   setUserProp p "_ALAMO_BILLBOARDS" 1    -- legacy hook only
+   ```
+   Export, open in AloViewer. Verify identical billboard behavior to step 4 -- `resolve_billboard_mode` should have mapped the legacy hook to BBT_PARALLEL.
+
+**Negative tripwire K** (manual sanity check during development): in `scene_walker.cpp::resolve_billboard_mode`, remove the `_ALAMO_BILLBOARDS` fallback branch. Rebuild. Re-run step 5. Expected: the AloViewer-loaded mesh no longer billboards (renders with its authored static orientation). Confirms the fallback is what wires the legacy hook through.
