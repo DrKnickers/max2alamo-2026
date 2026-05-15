@@ -18,6 +18,7 @@ add_executable(alamo_format_tests
     anim_clip_list_test.cpp
     legacy_clip_scan_test.cpp
     shadow_volume_check_test.cpp
+    collision_tree_test.cpp
 )
 target_link_libraries(alamo_format_tests PRIVATE alamo_format Catch2::Catch2WithMain)
 target_compile_features(alamo_format_tests PRIVATE cxx_std_17)
