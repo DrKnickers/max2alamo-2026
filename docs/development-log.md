@@ -773,10 +773,7 @@ Export options dialog (frame range, format-version flag, log path), structured w
 
 ## Open format questions
 
-Tracked at the bottom of [`docs/format-notes.md`](format-notes.md). Most Phase 4-relevant questions are now resolved; remaining:
-- `0x402` bbox layout (6 floats min/max vs other?). Cosmetic; doesn't block rendering.
-- `0x10002` vertex-format chunk payload contents.
-- Collision tree (`0x1200`-`0x1203`) internal structure (only blocks Phase 5+ if collision export is required).
+Tracked at the bottom of [`docs/format-notes.md`](format-notes.md). Most Phase 4-relevant questions are now resolved; the canonical table is in `format-notes.md`. The remaining open items (as of Phase 9.1's close-out pass) are listed there with their current resolution state.
 
 ---
 

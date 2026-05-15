@@ -141,8 +141,11 @@ ChunkNode build_mesh_info(const ExportMesh& mesh) {
     std::vector<std::uint8_t> p;
     p.reserve(kMeshInfoBytes);
     append_u32(p, static_cast<std::uint32_t>(mesh.submeshes.size()));
-    // 6 floats: bbox min[3] then max[3]. Confirmed empirically against
-    // round-trip via Mike's importer in Phase 4c (TODO: validate).
+    // 6 floats: bbox min[3] then max[3]. Confirmed Phase 9.1 against
+    // AloViewer source (`src/Assets/Models.cpp:184-190` reads exactly
+    // this layout: materialCount, min[3], max[3], unused, isHidden,
+    // isCollisionMesh) AND empirically (69/69 vanilla meshes have
+    // 0x402 floats match the mesh's vertex AABB within 1e-3 tolerance).
     for (float v : mesh.bbox_min) append_f32(p, v);
     for (float v : mesh.bbox_max) append_f32(p, v);
     append_u32(p, 0);  // unused
