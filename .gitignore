@@ -68,6 +68,9 @@ re/
 # Test corpus (Lucasfilm IP — local only)
 tests/corpus/
 
+# Prereq experiment fixtures (derived from gitignored corpus → also Lucasfilm IP)
+tests/fixtures/
+
 # Python
 __pycache__/
 *.pyc
