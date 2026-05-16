@@ -9,24 +9,32 @@
 -- Predicted bytes (asserted by verify_test_phase14b_static_mesh_parent_bone.py):
 --   bones[0] = "Root"      parent=0xFFFFFFFF
 --   bones[1] = "HandBone"  parent=0
+--                          translation row ~ (500, 0, 0)  <- bind position
 --   bones[2] = "GunMesh"   parent=1                       <- the fix
---                          translation row ~ (200, 0, 0)  <- parent-local, not world
+--                          translation row ~ (0, 200, 0)  <- parent-local, not world
 
 fileIn "_harness.ms"
 alamoTestSetup()
 
 animationRange = interval 0 10
 
--- HandBone: pivot at world (500, 0, 0), display along world +Y.
-hand = BoneSys.createBone [500, 0, 0] [500, 1000, 0] [0, 0, 1]
+-- HandBone: pivot at world (500, 0, 0), bone display direction +X
+-- (createBone with from-to along +X leaves node TM rotation at
+-- identity). Earlier versions of this fixture used
+-- `createBone [500,0,0] [500,1000,0]` (direction +Y), which bakes
+-- +90 Z into the bone's node TM -- and the `at time 0 (hand.rotation
+-- = identity)` keyframe below then orbits the bone's translation
+-- around the local pivot to (0, -500, 0), silently corrupting the
+-- bind pose. See Phase 14d (#87) for the diagnostic that surfaced
+-- this. The fix here is to keep node TM rotation at identity so
+-- the keyframe is a no-op for translation.
+hand = BoneSys.createBone [500, 0, 0] [510, 0, 0] [0, 0, 1]
 hand.name = "HandBone"
 
--- GunMesh: a plain Box, placed in world such that its parent-local
--- translation relative to HandBone comes out as (200, 0, 0) -- 200
--- units along HandBone's local +X axis (= world +Y at bind pose).
--- HandBone is at world (500, 0, 0) with rotation that aligns local
--- +X with world +Y, so 200 along local +X = world (0, 200, 0)
--- offset from the hand, i.e. world (500, 200, 0).
+-- GunMesh: a plain Box at world (500, 200, 0), parented to
+-- HandBone. With HandBone at identity rotation + T(500, 0, 0),
+-- GunMesh's parent-local translation is (0, 200, 0) -- the
+-- world delta with no rotation transformation.
 gun = Box length:50 width:50 height:50 pos:[500, 200, 0] name:"GunMesh"
 gun.parent = hand
 
