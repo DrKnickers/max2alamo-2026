@@ -1250,7 +1250,6 @@ void walk_node(IGameNode* node, alamo_format::ExportScene& scene,
                 std::uint32_t connect_bone_index = 0;  // 0 = Root by default (skinned path)
                 if (!is_skinned) {
                     synth_bone.name           = to_utf8(node->GetName());
-                    synth_bone.parent_index   = 0;          // child of Root
                     // Phase 8f: honor Max-side IsNodeHidden, mirroring
                     // walk_lights/walk_proxies. Static-mesh synth bones
                     // were previously hardcoded visible=true regardless
@@ -1265,15 +1264,40 @@ void walk_node(IGameNode* node, alamo_format::ExportScene& scene,
                     // via resolve_billboard_mode.
                     synth_bone.billboard_mode = static_cast<std::uint32_t>(
                         resolve_billboard_mode(max_node));
+
+                    // Phase 14b (#84 follow-up): if the static mesh is
+                    // parented in Max to an exportable bone (real Max
+                    // bone or helper-as-bone), inherit that bone's
+                    // transform chain so the mesh follows animation.
+                    // Otherwise default to the legacy "child of Root +
+                    // world TM" path. Without this, static accessories
+                    // (rifles pegged to a hand, capes pegged to chest,
+                    // etc.) stayed locked to their bind-pose world
+                    // position while the rig animated around them --
+                    // visible as EI_SNOWTROOPER's gun floating free
+                    // during playback.
+                    //
                     // Phase 5g: compose with the static-mesh node's
                     // object offset (e.g. mesh-marker hardpoints when
                     // a future workflow allows Alamo_Export_Geometry=
                     // true while keeping pivot-rotation directions).
-                    {
-                        const Matrix3 mesh_tm = node->GetWorldTM().ExtractMatrix3();
-                        synth_bone.matrix = encode_matrix3(
-                            compose_with_object_offset(node->GetMaxNode(), mesh_tm));
+                    const Matrix3 mesh_world = node->GetWorldTM().ExtractMatrix3();
+                    Matrix3 mesh_local = mesh_world;
+                    std::uint32_t mesh_parent_idx = 0;          // default: child of Root
+                    if (INode* parent_inode = max_node->GetParentNode()) {
+                        if (!parent_inode->IsRootNode()) {
+                            auto it = bone_map.find(parent_inode);
+                            if (it != bone_map.end()) {
+                                mesh_parent_idx = it->second;
+                                const Matrix3 parent_world = parent_inode->GetNodeTM(0);
+                                mesh_local = mesh_world * Inverse(parent_world);
+                            }
+                        }
                     }
+                    synth_bone.parent_index = mesh_parent_idx;
+                    synth_bone.matrix = encode_matrix3(
+                        compose_with_object_offset(max_node, mesh_local));
+
                     connect_bone_index = static_cast<std::uint32_t>(scene.bones.size());
                     ctx.fallback_bone_index = connect_bone_index;
                 }
