@@ -7,18 +7,32 @@
 | Source | World translation `(x, y, z)` | How computed |
 |---|---|---|
 | **Max** (truth) | `(6.77, -1.56, 5.79)` | `Box01.transform.position` from `tests/maxscript/_phase14c_dump.ms` running against `EI_SNOWTROOPER.max` |
-| **Engine** (chain composed) | `(-4.493, -1.055, 0.000)` | `_chain_dump.py` composing the `.alo`'s parent chain from Box01 → B_Gun → ... → Root via row-vector convention |
+| **Row-vector chain composition of our .alo** | `(-4.493, -1.055, 0.000)` | `_chain_dump.py` composing the `.alo`'s parent chain from Box01 → B_Gun → ... → Root via row-vector convention |
 | **Visible** (AloViewer) | gun renders at far-left of viewport, body at right (Z ≈ 0 = floor) | Visual inspection of `build/maxbatch/phase14b_snowtrooper.alo` |
 
-The Engine and Visible views agree (Z ≈ 0 = floor matches the "far-left, low" gun position in the screenshot). The mismatch is between **Max's view** and **what the engine renders**.
+The row-vector chain composition disagrees sharply with Max. The visible-in-AloViewer position **qualitatively matches** the row-vector composition's prediction (gun at floor height, far-left in the viewport per the post-Phase-14b screenshot) — but this is an eyeball cross-check against a single screenshot, not a measured engine-renders-here observation. The mismatch is between **Max's view** and **what AloViewer renders**, with the row-vector composition serving as one specific candidate model for the engine's behavior.
 
 ## Side-by-side bone-chain deltas
 
-| Node | Max world | Engine chain world | Delta (Max - Engine) |
+| Node | Max world | Row-vector chain world | Delta (Max - Engine) |
 |---|---|---|---|
 | B_Hand_R | `(-0.934, -2.322, 4.490)` | `(-4.106, +0.016, 7.763)` | `(+3.17, -2.34, -3.27)` |
 | B_Gun | `(-0.822, -2.614, 4.720)` | `(-4.412, -0.211, 7.689)` | `(+3.59, -2.40, -2.97)` |
 | Box01 | `(+6.765, -1.555, 5.792)` | `(-4.493, -1.055, 0.000)` | `(+11.26, -0.50, +5.79)` |
+
+## Sharpest clue — the synthetic fixture's exact inverse rotation
+
+In the Phase 14b test fixture (`test_phase14b_static_mesh_parent_bone.ms`), `HandBone` is authored at Max world `(500, 0, 0)` with bone direction `+Y` (rotation = `+90°` about world Z, stored in the node TM). The `.alo`'s encoding of HandBone's translation row is `(0, -500, 0)`.
+
+That value is **exactly** `(500, 0, 0) × Inverse(R_+90°_about_Z)` — a clean asymmetric rotation, not a basis swap, not a small numerical drift. The pattern is a single applied inverse rotation, on a top-level bone with identity object offset.
+
+This observation is the highest-resolution discriminator we have, because:
+
+- It's on a **top-level** bone, eliminating any "deep-chain accumulation" explanation.
+- The bone has **identity object offset**, eliminating any "missed compose_with_object_offset" explanation.
+- The applied transform is **exactly** `Inverse(R)` for the bone's own rotation `R`, not a generic transform. That points sharply at one of: a stray `Inverse()` call in the walker, a column-vector convention mismatch (which mathematically equals applying `Inverse(R)` on top of row-vector results for non-identity rotations), or an `IGameNode::GetLocalTM` SDK quirk that returns world-with-inverse-rotated-translation rather than plain world.
+
+Phase 14d's Task 1 should vary HandBone's rotation through several known asymmetric values (identity, `+45°` about X, `+90°` about Y) and dump the resulting `.alo` translation row in each case. The pattern of which inverse rotation appears (or doesn't) discriminates between the three candidate explanations cheaply.
 
 ## Observations
 
@@ -67,7 +81,6 @@ Before any walker change:
 
 ## Open questions
 
-- **Why does HandBone's `.alo` encoding put it at `(0, -500, 0)` when Max says `(500, 0, 0)`?** The number is exactly `world * Inverse(R_+90_about_Z)`. Suggests the walker is applying an additional inverse rotation somewhere that the engine then composes-out. Could be related to `walk_bones`' use of `IGameNode::GetLocalTM` (vs `INode::GetNodeTM`), which has SDK-documented quirks around object offset and parent-relative semantics.
 - **Why does the body render correctly visually if engine-composed world coords don't match Max?** Engine composition might use a different convention than what the .alo's on-disk layout literally encodes; the engine + writer are both using the "wrong" convention consistently, and the result looks fine until something (the Phase 14b change) reaches across that convention boundary.
 
 ## Files
