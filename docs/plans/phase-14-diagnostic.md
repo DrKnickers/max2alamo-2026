@@ -68,6 +68,37 @@ In order of investigation:
 
 The bug was in `Quat(Matrix3)`, not in any of the matrix-level paths.
 
+## Phase 14b — static-mesh attachment to Max-parent bone (also in PR #86)
+
+After Phase 14a fixed the per-frame quat extraction, EI_SNOWTROOPER's
+body played correctly but the gun stayed in its bind-pose world
+position while the arm animated — visible in AloViewer as the rifle
+floating free of the hand. Root cause: our walker's static-mesh path
+hardcoded `parent_index = 0` and encoded the mesh's WORLD TM, so the
+mesh attached to scene Root regardless of its Max-side parent.
+
+Fix in [scene_walker.cpp:1251 (`!is_skinned` branch)](../../max2alamo/src/scene_walker.cpp#L1251):
+look up the Max parent INode in `bone_map`. If found, parent the
+synthetic per-mesh bone to it and encode `mesh_world * Inverse(parent_world)`
+(parent-local TM). Otherwise keep the legacy world-to-Root path.
+
+Test: `tests/maxscript/test_phase14b_static_mesh_parent_bone.ms` + its
+`verify_*.py` sibling. The verifier asserts the GunMesh's synthetic
+bone has `parent_index = 1` (HandBone), not `0` (Root), and that its
+translation row is `(200, 0, 0)` in HandBone-local space, not world.
+
+Data-layer verification on EI_SNOWTROOPER (the actual #84 reproducer):
+after the fix, the gun mesh's synthetic attachment bone (`Box01`)
+parents to `B_Gun` (bone index 15), which chains up through
+`B_Hand_R → B_FArm_R → B_Bicep_R → B_Chest → Turret_00 → B_Pelvis →
+Root`. Similarly the muzzle-flash attachment bone (`MuzzleA_00_Flash`)
+now parents to `MuzzleA_00`. The collision-hull bone (`Col_Main`)
+legitimately stays at Root since it's a whole-figure proxy.
+
+Manual verification (pending DrKnickers in AloViewer): re-export of
+EI_SNOWTROOPER should now play animations with the gun rigidly
+attached to the hand. Rest pose unchanged from Phase 14a state.
+
 ## Follow-up work for future sessions
 
 - **Regenerate Phase 8 maxbatch SHA tests.** All
