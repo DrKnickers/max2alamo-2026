@@ -1726,6 +1726,44 @@ void sample_clip_animation(IGameScene* igame,
         out_anim.bones[i].default_rotation = pack_quat_int16(q);
     }
 
+    // Phase 14e (#88-followup): for non-animatable bones (synth bones
+    // for static meshes, lights, proxies, light targets) the engine
+    // reads trans_offset / default_rotation as the bone's STATIC
+    // local-to-parent TM during animation playback. The .alo bind
+    // matrix only governs bind-pose rendering; once a clip plays,
+    // every bone's TM is reconstructed from the .ala's per-bone
+    // entries. If we leave the defaults at the struct's zero values
+    // for synth bones, the engine renders them at the parent's
+    // origin with identity rotation -- visible as e.g. an attached
+    // rifle "snapping" off the hand to wherever B_Gun's origin lives
+    // the moment any clip starts.
+    //
+    // Vanilla evidence: in EI_DARKTROOPER_ONE_ATTACK_00.ALA, every
+    // bone with idx_translation = idx_rotation = -1 (MuzzleA_00,
+    // Camera01.Target, IK_*, etc.) carries explicit trans_offset and
+    // default_rotation matching its bind matrix. We mirror that.
+    //
+    // Decode scene.bones[i].matrix (12 floats laid out by
+    // encode_matrix3 as row0.x, row1.x, row2.x, trn.x, row0.y, ...)
+    // back into a Matrix3, then extract translation row + rotation
+    // quat. Object offset is already baked in (Phase 5g composed it
+    // before encode_matrix3 ran at bind time).
+    for (std::size_t i = 0; i < out_anim.bones.size(); ++i) {
+        if (animatable[i] != nullptr) continue;
+        const auto& mat = scene.bones[i].matrix;
+        Matrix3 m3;
+        m3.SetRow(0, Point3(mat[0], mat[4], mat[8]));    // local +X in parent
+        m3.SetRow(1, Point3(mat[1], mat[5], mat[9]));    // local +Y in parent
+        m3.SetRow(2, Point3(mat[2], mat[6], mat[10]));   // local +Z in parent
+        m3.SetRow(3, Point3(mat[3], mat[7], mat[11]));   // translation
+        out_anim.bones[i].trans_offset[0] = mat[3];
+        out_anim.bones[i].trans_offset[1] = mat[7];
+        out_anim.bones[i].trans_offset[2] = mat[11];
+        // trans_scale stays at (0,0,0) -- no per-frame variation.
+        const Quat q = extract_rotation_quat(m3);
+        out_anim.bones[i].default_rotation = pack_quat_int16(q);
+    }
+
     // Phase 8d: don't early-return when rot_next == 0; the visibility pass
     // below uses `visibility_map` (broader than bone_map) and may emit
     // 0x1007 even on scenes with zero rotation/translation tracks (e.g.
