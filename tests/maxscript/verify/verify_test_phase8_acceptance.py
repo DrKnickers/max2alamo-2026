@@ -347,6 +347,12 @@ def main(alo_path):
         return out
 
     # #D22-D23: BoneA frame[0] ~ identity, frame[30] - frame[0] ~ 90 Z.
+    # Post-Phase-14a (commit bf35d5e): extract_rotation_quat conjugates
+    # the result of `Quat(Matrix3)` to undo Max's IGame convention flip.
+    # Every walker-emitted rotation quat now has its xyz components
+    # negated relative to the pre-14a output -- so authored "+90 Z"
+    # reads back as (0, 0, -sin45, cos45) on disk, not (0, 0, +sin45,
+    # cos45). Visually verified correct on EI_SNOWTROOPER's 60 clips.
     if "BoneA" in slot_data:
         qs = decode_quat_track(slot_data["BoneA"]["idx_rotation"], n_rotation_words)
         if len(qs) >= 31:
@@ -354,19 +360,20 @@ def main(alo_path):
             ssq = sum(c * c for c in qref)
             if abs(ssq - 1.0) > _TOL_UNIT_QUAT:
                 errors.append(f"#D22 BoneA frame[0] |q|^2 = {ssq}, not unit")
-            # Apply qref^-1 to qs[30]; expect (0, 0, sin45, cos45).
+            # Apply qref^-1 to qs[30]; post-14a expect (0, 0, -sin45, cos45).
             q_delta = _quat_mul(_quat_conj(qref), qs[30])
             if q_delta[3] < 0:
                 q_delta = tuple(-c for c in q_delta)
             sin45 = math.sin(math.pi / 4.0)
             cos45 = math.cos(math.pi / 4.0)
             d = max(abs(q_delta[0]), abs(q_delta[1]),
-                    abs(q_delta[2] - sin45), abs(q_delta[3] - cos45))
+                    abs(q_delta[2] + sin45), abs(q_delta[3] - cos45))
             if d > _TOL_QUAT_FRAME:
                 errors.append(f"#D23 BoneA frame[30] relative to frame[0] = {q_delta}, "
-                              f"expected (0,0,{sin45:.4f},{cos45:.4f}); delta={d}")
+                              f"expected (0,0,{-sin45:.4f},{cos45:.4f}); delta={d}")
 
-    # #D24-D25: HelperBone frame[30] - frame[0] ~ 45 X.
+    # #D24-D25: HelperBone frame[30] - frame[0] ~ 45 X.  Same Phase 14a
+    # xyz-negation convention as #D23: x component sign flips.
     if "HelperBone" in slot_data:
         qs = decode_quat_track(slot_data["HelperBone"]["idx_rotation"], n_rotation_words)
         if len(qs) >= 31:
@@ -379,11 +386,11 @@ def main(alo_path):
                 q_delta = tuple(-c for c in q_delta)
             sin22 = math.sin(math.radians(22.5))
             cos22 = math.cos(math.radians(22.5))
-            d = max(abs(q_delta[0] - sin22), abs(q_delta[1]),
+            d = max(abs(q_delta[0] + sin22), abs(q_delta[1]),
                     abs(q_delta[2]), abs(q_delta[3] - cos22))
             if d > _TOL_QUAT_FRAME:
                 errors.append(f"#D25 HelperBone frame[30] relative to frame[0] = {q_delta}, "
-                              f"expected ({sin22:.4f},0,0,{cos22:.4f}); delta={d}")
+                              f"expected ({-sin22:.4f},0,0,{cos22:.4f}); delta={d}")
 
     # #D26 BoneB rotation is constant (unit-length, frame-stable).
     if "BoneB" in slot_data:
@@ -396,16 +403,27 @@ def main(alo_path):
                     break
 
     # #D27-D28 PivotedHardpoint: composes objectoffsetrot * authored.
-    # Expected: q_offset = (0, -sin45, 0, cos45) (Phase 5g convention).
-    # Frame 0: q_composed_0 = q_offset (authored is identity).
-    # Frame 30: q_composed_30 = q_offset * q_authored_30,
-    #           q_authored_30 = (0, 0, sin30, cos30).
+    # The .max scene's `objectoffsetrot` is authored as -90 deg about
+    # Y (matching the pre-Phase-14a "true" rotation (0, -sin45, 0,
+    # cos45)).  Post-Phase-14a (commit bf35d5e) the walker emits the
+    # CONJUGATE of that on disk: (0, +sin45, 0, cos45).  The on-disk
+    # composite at frame 30 is therefore
+    #     conjugate(q_offset_true * q_authored_30)
+    #   = conjugate(q_authored_30) * conjugate(q_offset_true)
+    # (quat conjugate distributes by reversing multiplication order).
+    #
+    # To recover the authored rotation from the on-disk value we
+    # multiply on the RIGHT (not the left) by the on-disk q_offset's
+    # inverse: q_rel = qs[30] * q_offset_inv collapses to
+    # conjugate(q_authored), i.e. (0, 0, -sin30, cos30).  That keeps
+    # the test asserting that 5g+8b composition still works without
+    # adding ad-hoc tolerance to mask the convention change.
     if "PivotedHardpoint" in slot_data:
         qs = decode_quat_track(slot_data["PivotedHardpoint"]["idx_rotation"], n_rotation_words)
         if len(qs) >= 31:
             sin45 = math.sin(math.pi / 4.0)
             cos45 = math.cos(math.pi / 4.0)
-            q_offset = (0.0, -sin45, 0.0, cos45)
+            q_offset = (0.0, sin45, 0.0, cos45)   # on-disk = conjugate(true_offset)
             # #D27: frame 0 ~ q_offset (within tolerance, accounting for sign).
             q0 = qs[0]
             if q0[3] < 0:
@@ -415,19 +433,23 @@ def main(alo_path):
             if d0 > _TOL_QUAT_FRAME:
                 errors.append(f"#D27 PivotedHardpoint frame[0] = {q0}, expected ~{q_off_pos}; "
                               f"delta={d0} (5g static composition broken?)")
-            # #D28: per-frame relative composition.
-            # Apply q_offset^-1 to qs[30]; expect q_authored_30.
+            # #D28: per-frame relative composition.  qs[30] = conjugate(
+            # q_offset_true * q_authored) = conjugate(q_authored) *
+            # conjugate(q_offset_true); RIGHT-multiply by q_offset_inv (=
+            # q_offset_true under the updated definition) collapses the
+            # tail.  Expect conjugate(q_authored_30) = (0, 0, -sin30, cos30).
             q_offset_inv = _quat_conj(q_offset)
-            q_rel = _quat_mul(q_offset_inv, qs[30])
+            q_rel = _quat_mul(qs[30], q_offset_inv)
             if q_rel[3] < 0:
                 q_rel = tuple(-c for c in q_rel)
             sin30 = math.sin(math.radians(30.0))
             cos30 = math.cos(math.radians(30.0))
             d30 = max(abs(q_rel[0]), abs(q_rel[1]),
-                      abs(q_rel[2] - sin30), abs(q_rel[3] - cos30))
+                      abs(q_rel[2] + sin30), abs(q_rel[3] - cos30))
             if d30 > _TOL_QUAT_FRAME:
                 errors.append(f"#D28 PivotedHardpoint frame[30] composition off: "
-                              f"q_offset^-1 * q_30 = {q_rel}, expected ~(0,0,{sin30:.4f},{cos30:.4f}); "
+                              f"q_30 * q_offset^-1 = {q_rel}, "
+                              f"expected ~(0,0,{-sin30:.4f},{cos30:.4f}); "
                               f"delta={d30} (5g x 8b interaction broken)")
 
     # #D29 all quats unit-length across all animated bones.
