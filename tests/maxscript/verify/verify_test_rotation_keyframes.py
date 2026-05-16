@@ -269,13 +269,21 @@ def main(alo_path):
             errors.append(f"#13 frame[0] quat = ({x:.5f}, {y:.5f}, {z:.5f}, {w:.5f}), "
                           f"expected ~(0, 0, 0, 1); max-delta {delta:.5f} > {_TOL_QUAT_FRAME}")
 
-    # #14 Frame 30 quat ~ (0, 0, sin45, cos45).
+    # #14 Frame 30 quat ~ (0, 0, -sin45, cos45).
+    # Post-Phase-14a (commit bf35d5e): extract_rotation_quat now
+    # conjugates the result of `Quat(Matrix3)` to undo Max's IGame
+    # convention flip. Every walker-emitted rotation quat now has
+    # its xyz components negated relative to the pre-14a output
+    # (the rotation it represents is what the engine plays back
+    # correctly -- visually verified on EI_SNOWTROOPER's 60 clips).
+    # The on-disk quat for authored "+90 deg around Z" is therefore
+    # (0, 0, -sin45, cos45), not (0, 0, +sin45, cos45).
     if len(frame_quats) >= 31:
         x, y, z, w = frame_quats[30]
-        delta = max(abs(x), abs(y), abs(z - _SIN45), abs(w - _COS45))
+        delta = max(abs(x), abs(y), abs(z + _SIN45), abs(w - _COS45))
         if delta > _TOL_QUAT_FRAME:
             errors.append(f"#14 frame[30] quat = ({x:.5f}, {y:.5f}, {z:.5f}, {w:.5f}), "
-                          f"expected ~(0, 0, {_SIN45:.5f}, {_COS45:.5f}); "
+                          f"expected ~(0, 0, {-_SIN45:.5f}, {_COS45:.5f}); "
                           f"max-delta {delta:.5f} > {_TOL_QUAT_FRAME}")
 
     # #15 All frames have unit-length quaternions.

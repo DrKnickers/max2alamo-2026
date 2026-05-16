@@ -271,14 +271,17 @@ def main(alo_path):
             if len(rotbone_q) > 30:
                 rel = qmul(qref_inv, rotbone_q[30])
                 # rel should be a quaternion representing +90deg about Z:
-                # (0, 0, sin45, cos45). Allow sign flip via abs(rel[3]).
-                # Force canonical hemisphere with positive w.
+                # (0, 0, -sin45, cos45) under the Phase 14a convention
+                # (commit bf35d5e conjugates every walker-emitted rotation
+                # quat to undo Max's IGame `Quat(Matrix3)` flip -- the
+                # on-disk z component is therefore -sin45, not +sin45).
+                # Allow sign flip via canonical-hemisphere (positive w).
                 if rel[3] < 0: rel = tuple(-c for c in rel)
                 delta = max(abs(rel[0]), abs(rel[1]),
-                            abs(rel[2] - _SIN45), abs(rel[3] - _COS45))
+                            abs(rel[2] + _SIN45), abs(rel[3] - _COS45))
                 if delta > _TOL_QUAT_FRAME:
                     errors.append(f"#C17 RotBone frame[30] relative to frame[0] = {rel}, "
-                                  f"expected (0,0,{_SIN45},{_COS45}); delta={delta}")
+                                  f"expected (0,0,{-_SIN45},{_COS45}); delta={delta}")
             # Frame[0] unit-length check (captures any pack/unpack bug).
             ssq0 = sum(c*c for c in qref)
             if abs(ssq0 - 1.0) > _TOL_UNIT_QUAT:
