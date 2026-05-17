@@ -75,20 +75,31 @@ def main(path: str) -> int:
     check_f("Shininess",     8.0)
     check_f4("Colorization", expected_colorization)
 
-    # --- Skinning (Phase 5b) ---
+    # --- Skinning (Phase 5b + 10.5) ---
+    # Post-Phase-10.5 (commit 63f5654): for shaders that need it
+    # (RSkin / DirectX), the writer emits a 0x10006 chunk and each
+    # vertex's bone_indices[i] becomes a LOCAL slot index that the
+    # engine dereferences via `bone_remap[idx]` to get the global
+    # bone. Resolve via Submesh.resolve_bone() so this test asserts
+    # on the GEOMETRIC binding (which chain bone the vertex actually
+    # attaches to), independent of whether 0x10006 is present.
     bone_set = set()
     for i, v in enumerate(sm.vertices):
         if not approx(v.weights[0], 1.0):
             errors.append(f"vert[{i}]: weights[0] should be 1.0, got {v.weights[0]}")
             break
-        if v.bone_indices[0] not in (1, 2, 3):
-            errors.append(f"vert[{i}]: bone_indices[0]={v.bone_indices[0]} "
-                          f"out of expected chain range {{1,2,3}}")
+        global_bone = sm.resolve_bone(v.bone_indices[0])
+        if global_bone not in (1, 2, 3):
+            errors.append(f"vert[{i}]: local bone_indices[0]={v.bone_indices[0]} "
+                          f"resolved to global bone {global_bone}, "
+                          f"out of expected chain range {{1,2,3}}  "
+                          f"(0x10006 remap={sm.bone_remap})")
             break
-        bone_set.add(v.bone_indices[0])
+        bone_set.add(global_bone)
     if bone_set != {1, 2, 3}:
         errors.append(f"distribution: expected verts bound to all of "
-                      f"{{1,2,3}}, got {bone_set}")
+                      f"{{1,2,3}} (global, post-remap), got {bone_set}  "
+                      f"(0x10006 remap={sm.bone_remap})")
 
     if errors:
         print("FAIL:", file=sys.stderr)
