@@ -88,6 +88,12 @@ class Submesh:
     # `bones[bone_remap[bidx]]` for skinning. Verifiers that assert on
     # specific global bone indices must apply this remap when present.
     bone_remap: Optional[List[int]] = None
+    # Phase 13a: 0x10002 vertex format string. The shader-derived name
+    # like "alD3dVertRSkinNU2" / "alD3dVertB4I4NU2" / "alD3dVertNU2" that
+    # the engine renderer uses to bind the GPU vertex declaration. Walker
+    # populates per-submesh via vertex_format_selector. Empty = legacy
+    # back-compat (writer falls back to "alD3dVertNU2").
+    vertex_format_name: str = ""
 
     def find_param(self, name: str) -> Optional[MaterialParam]:
         for p in self.material_params:
@@ -526,6 +532,9 @@ def _parse_submesh(data: bytes, material_payload, geom_payload) -> Submesh:
     for cid, _, off, size, _end in _walk(data, geom_off, geom_end):
         if cid == 0x10001:
             vertex_count, face_count = struct.unpack_from("<II", data, off)
+        elif cid == 0x10002:
+            # Phase 13a: per-submesh vertex format string. Null-terminated.
+            sm.vertex_format_name = _read_cstring(data, off, size)
         elif cid == 0x10007:
             vbuf = (off, size)
         elif cid == 0x10004:
