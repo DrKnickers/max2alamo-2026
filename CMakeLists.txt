@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(max2alamo_2026
-    VERSION 0.9.0
+    VERSION 0.9.1
     DESCRIPTION "Modern 3ds Max 2026 exporter for the Alamo (.alo/.ala) format"
     LANGUAGES CXX
 )
