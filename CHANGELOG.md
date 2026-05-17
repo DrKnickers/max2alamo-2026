@@ -6,7 +6,45 @@ Releases are tagged on `main` as `vMAJOR.MINOR.PATCH` and published as GitHub Re
 
 ## [Unreleased]
 
-(no changes since v0.9.0)
+(no changes since v0.9.1)
+
+## [0.9.1] — 2026-05-17
+
+First stabilization-window release on top of v0.9.0's feature-complete shot. Six engine-visible writer correctness fixes (vertex-format-string-per-shader, skin-bone-remap, animation-quaternion sign, static-mesh parent inheritance, static-mesh `.ala` defaults, legacy clip-data importer always-active), plus the test-side regen and diagnostic tooling that surfaced them. Corpus round-trip remains 4,929 / 4,929 byte-identical; harness runs 59 / 59 clean against this tag.
+
+### Fixed — exporter / engine playback
+
+- **Vertex format string per shader** (Phase 10, [#75](https://github.com/DrKnickers/max2alamo-2026/issues/75)): the `0x10002` "submesh vertex format" chunk now reports the per-shader name (`alD3dVertN`, `alD3dVertNU2`, `alD3dVertRSkin`, etc.) instead of the hardcoded `alD3dVertNU2`. Engine renderer no longer falls back to a generic vertex layout for shaders that need per-vertex tangents / bone weights.
+- **Skin-bone remap chunk** (Phase 10.5, [#81](https://github.com/DrKnickers/max2alamo-2026/issues/81)): shaders that need it now get a per-submesh `0x10006` chunk; the writer emits per-vertex `BoneIndices` as **local slot indices** that the renderer dereferences via `bones[bone_remap[idx]]` to get the actual matrix (per AloViewer `Models.cpp:155`). Pre-0.9.1 the writer wrote globals into `BoneIndices` and omitted `0x10006`, which the renderer interpreted as garbage — skinned RSkin meshes rendered as stretched-triangle artifacts even after PR #80's vertex-format fix.
+- **Legacy clip-data importer always active** (Phase 11c, bundled with 10.5): the `NOTIFY_FILE_POST_OPEN` hook that translates legacy Petroglyph `.max` appData records into Phase 11b's user-prop convention now runs unconditionally, not only when the Animation Settings rollout is open. Files opened in fresh Max sessions surface their legacy clip catalogue immediately.
+- **Animation rotation-quaternion sign** (Phase 14a, [#84](https://github.com/DrKnickers/max2alamo-2026/issues/84)): `extract_rotation_quat` now conjugates the result of Max's `Quat(Matrix3)` to undo the IGame convention flip. Pre-0.9.1 every rotation track's `xyz` components shipped negated, so animation playback was sign-flipped (visible on EI_SNOWTROOPER's 60 clips). Engine playback now visually matches the authored scene.
+- **Static meshes inherit Max-parent bone** (Phase 14b, follow-up to #84): when a non-skinned mesh is parented in Max to an exportable bone (real bone or helper-as-bone), the synthetic per-mesh attachment bone now parents to that bone and stores a parent-LOCAL TM. Pre-0.9.1, `walk_node` hardcoded `parent_index = 0` and encoded the mesh's WORLD TM, so accessories like EI_SNOWTROOPER's rifle stayed pinned to scene Root and floated free of the hand during animation playback.
+- **Static-mesh `.ala` defaults** (Phase 14e, [#87](https://github.com/DrKnickers/max2alamo-2026/issues/87)): non-animatable bones (static-mesh attachment bones, light synth bones, proxy synth bones, light-target sibling bones) now serialize their bind matrix's translation and rotation as `trans_offset` + `default_rotation` in the `.ala`. Pre-0.9.1 these stayed at struct zero-defaults, so the engine read "rifle is at parent-local `(0, 0, 0)` with identity rotation" the moment any clip started playing and snapped the gun off the hand to B_Gun's origin. Vanilla `.ala` content has always carried these defaults; the walker now mirrors that convention.
+
+### Fixed — tests / verifiers
+
+- **Phase 14a quat-conjugate verifier regen** (PR #90): three verifiers (`test_phase8_acceptance`, `test_rotation_keyframes`, `test_translation_keyframes`) had their expected quaternion components updated for the new `xyz`-negated sign convention. `verify_test_phase8_acceptance.py`'s `#D28` composition assertion also switched to RIGHT-multiplication so `conj(a*b) = conj(b)*conj(a)` collapses the `q_offset` cleanly — Phase 5g composition invariant unchanged, math expressing it updated for the new convention.
+- **Phase 10.5 skin-bone-remap verifier regen** (PR #91): `_alo.py` now parses the `0x10006` chunk into `Submesh.bone_remap` and exposes `Submesh.resolve_bone(local_idx)`. `verify_test_skinned_rskin` calls `resolve_bone` before asserting that vertex bone indices land in the chain `{1, 2, 3}`. Change is additive (default `None`); the other 8 skinning verifiers read identically.
+- **Phase 14b fixture orbit corrected** (PR #88): `test_phase14b_static_mesh_parent_bone.ms` used `BoneSys.createBone [500,0,0] [500,1000,0]` which bakes `+90° Z` into the bone's node TM; the `at time 0 (hand.rotation = identity)` keyframe then orbited the translation around the local pivot, silently corrupting the bind pose. Switched to a collinear-X `createBone` direction so node TM stays identity and the keyframe is a no-op for translation. Verifier expectation updated from `(200, 0, 0)` to `(0, 200, 0)` parent-local for the honest bind pose.
+
+### Added — diagnostic / investigation tooling
+
+- **`tools/ala_diff/`** (Phase 14a): typed-semantic `.ala` comparator. Parses both files via `read_ala`, then compares the typed view (header, per-bone metadata, per-frame unpacked rotation + translation). The tool that surfaced the Phase 14a `Quat(Matrix3)` conjugate signature via dump-vs-vanilla side-by-side; useful long-term as the Tier 4 oracle for any "is my fresh export correct?" check.
+- **`tests/maxscript/verify/_chain_dump.py`** (Phase 14c): reads any `.alo`, dumps each bone's encoded parent-local TM **AND** the world TM the engine would reconstruct by composing the parent chain via row-vector convention.
+- **`tests/maxscript/verify/_ala_dump_bone.py`** (Phase 14e): reads a `.ala`, dumps a single bone's track metadata + per-frame reconstruction (rotation quat unpacking, translation `offset + scale*u16` reconstruction). The tool that surfaced the Phase 14e `trans_offset = (0, 0, 0)` regression by comparing Box01's track defaults to vanilla MuzzleA_00.
+- **`tests/maxscript/_phase14d_*.ms`** (Phase 14d): scripts for single-bone-variant exports, EI_SNOWTROOPER frame-0 chain dumps, and Box01 local-invariance-across-frames checks. Reusable pattern for any future user-content diagnostic.
+
+### Changed — documentation
+
+- **`docs/build.md`** — new "Authoring convention — bind pose lives at frame 0" section. Documents two authoring traps surfaced during Phase 14 debugging: `animationRange` starting after frame 0 (controller fallback values at frame 0 become the engine's bind pose, regardless of artist intent), and `BoneSys.createBone <from> <to>` baking node-TM rotation that later keyframes orbit. Both with concrete EI_SNOWTROOPER and synthetic-fixture examples.
+- **`docs/plans/phase-14b-static-mesh-bone-parent.md`**, **`phase-14c-gun-misaligned-findings.md`**, **`phase-14d-no-walker-bug-findings.md`** — full investigation writeups of the Phase 14 arc.
+- **`docs/development-log.md`** — per-phase rows for 10, 11c, 13a, 13b, 14, 14a, 14b, 14c, 14d, 14e, 14a/10.5 verifier regens.
+
+### Known limitations carried forward from v0.9.0
+
+- `.dle` is built locally and attached manually per release (Max 2026 SDK is non-redistributable; see [`docs/build.md`](docs/build.md)).
+- Per-mesh `_ALAMO_VERTEX_TYPE` user-prop override remains unwired — Phase 10 unblocked the writer to emit per-shader vertex format names, but the mesh-level override path is still tracked as a post-v0.9 item ([#75](https://github.com/DrKnickers/max2alamo-2026/issues/75)).
+- AloViewer / Mike Lankamp's importer round-trip remains a manual Tier 4 smoke (no headless AloViewer).
 
 ## [0.9.0] — 2026-05-15
 
