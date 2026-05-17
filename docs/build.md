@@ -16,6 +16,25 @@
 - **CMake 3.20+** (ships with VS, or install separately via `winget install Kitware.CMake`).
 - For the Max plugin: **3ds Max 2026** + **3ds Max 2026 SDK** (free with Max install).
 
+## First-time clone setup
+
+Run once after `git clone`:
+
+```powershell
+powershell -File scripts/setup-git-hooks.ps1
+```
+
+This sets `core.hooksPath = .githooks` so the in-repo `pre-commit` hook fires on every `git commit` in this clone. Currently the hook rejects commits that would put the maintainer's pre-v0.9.1 private email back into the public history (the repo's history was rewritten + force-pushed in the v0.9.1 release window to scrub that address; see `.githooks/pre-commit` for the full rule). Override with `--no-verify` if you have a deliberate reason.
+
+You also want to set the repo-local commit identity to your own GitHub noreply alias, so your private address doesn't end up in `git log`:
+
+```bash
+git config user.email "<your-github-id>+<your-username>@users.noreply.github.com"
+git config user.name  "<your-github-username>"
+```
+
+(GitHub auto-provides this noreply email — see `https://github.com/settings/emails` to find yours.)
+
 ## Building the format library + CLI tools
 
 From the repo root:

@@ -1,0 +1,68 @@
+#!/bin/sh
+# Reject any commit whose author or committer carries a non-noreply
+# email for this repo. Activated via `core.hooksPath = .githooks` --
+# see scripts/setup-git-hooks.ps1 (or .sh) for the one-time install.
+#
+# Background: every commit before 2026-05-17 used the maintainer's
+# private live.com address; switched to the GitHub-provided noreply
+# form mid-stream (PR #91). Full git history was rewritten + force-
+# pushed to scrub the private email from main + tags. This hook
+# prevents accidental recurrence in any future commit -- both in
+# this checkout and in any other clone whose owner runs the setup
+# script.
+
+set -e
+
+readonly EXPECTED_DOMAIN='@users.noreply.github.com'
+readonly REPO_FORBIDDEN_EMAILS='anthonyhnguyen99@live.com anthonyhnguyen99@gmail.com'
+
+author_email=$(git var GIT_AUTHOR_IDENT | sed -E 's/.*<([^>]+)>.*/\1/')
+committer_email=$(git var GIT_COMMITTER_IDENT | sed -E 's/.*<([^>]+)>.*/\1/')
+
+reject() {
+    cat >&2 <<EOF
+.githooks/pre-commit: REFUSING the commit.
+
+  The $1 email is:    $2
+
+  This repository's history was scrubbed of private email addresses
+  in v0.9.1's release window; any future commit MUST use a
+  ${EXPECTED_DOMAIN} address (or another non-personal alias).
+
+  To fix, set your repo-local user.email:
+
+    git config user.email '10111515+DrKnickers@users.noreply.github.com'
+
+  Then retry the commit.
+
+  Override (NOT recommended): commit with --no-verify to bypass this
+  hook. If you do that on purpose, please scrub the resulting commit
+  history before pushing.
+EOF
+    exit 1
+}
+
+# Hard-blacklist the known-leaked private addresses.
+for forbidden in $REPO_FORBIDDEN_EMAILS; do
+    if [ "$author_email" = "$forbidden" ]; then
+        reject author "$author_email"
+    fi
+    if [ "$committer_email" = "$forbidden" ]; then
+        reject committer "$committer_email"
+    fi
+done
+
+# Soft-warn for any non-noreply address (not a hard block -- a future
+# maintainer with a different identity should be able to commit too,
+# they just need to be aware their email will be in the public log).
+case "$author_email" in
+    *${EXPECTED_DOMAIN}|*@anthropic.com)
+        # OK: noreply or Anthropic co-author. Pass silently.
+        ;;
+    *)
+        echo "  .githooks/pre-commit: NOTE -- author email '$author_email' is" >&2
+        echo "  not a *${EXPECTED_DOMAIN} alias. Allowing the commit, but" >&2
+        echo "  consider whether you want this address in the public git log." >&2
+        echo "  Override with: git config user.email <your-noreply-alias>" >&2
+        ;;
+esac
