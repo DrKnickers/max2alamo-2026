@@ -81,12 +81,28 @@ class Submesh:
     material_params: List[MaterialParam] = field(default_factory=list)
     vertices: List[Vertex] = field(default_factory=list)
     indices: List[int] = field(default_factory=list)
+    # Phase 10.5: 0x10006 skin-bone-remap. When present, each vertex's
+    # bone_indices[i] is a LOCAL slot index; the global bone index is
+    # `bone_remap[local_idx]`. When absent, bone_indices[i] is global
+    # directly. Per AloViewer Models.cpp:155, the engine dereferences
+    # `bones[bone_remap[bidx]]` for skinning. Verifiers that assert on
+    # specific global bone indices must apply this remap when present.
+    bone_remap: Optional[List[int]] = None
 
     def find_param(self, name: str) -> Optional[MaterialParam]:
         for p in self.material_params:
             if p.name == name:
                 return p
         return None
+
+    def resolve_bone(self, local_idx: int) -> int:
+        """Translate a local vertex bone slot to its global skeleton
+        bone index, applying the 0x10006 remap when present."""
+        if self.bone_remap is None:
+            return local_idx
+        if 0 <= local_idx < len(self.bone_remap):
+            return self.bone_remap[local_idx]
+        return local_idx
 
 
 @dataclass
@@ -514,6 +530,11 @@ def _parse_submesh(data: bytes, material_payload, geom_payload) -> Submesh:
             vbuf = (off, size)
         elif cid == 0x10004:
             ibuf = (off, size)
+        elif cid == 0x10006:
+            # Phase 10.5: per-submesh local->global bone slot remap.
+            # Payload is a packed uint32 array; len = local-bone count.
+            count = size // 4
+            sm.bone_remap = list(struct.unpack_from(f"<{count}I", data, off))
 
     if vbuf is not None and vbuf[1] == vertex_count * 144:
         for i in range(vertex_count):
