@@ -51,7 +51,15 @@ Get-ChildItem -Path $hooksDir -File | ForEach-Object {
 }
 Write-Host ""
 Write-Host "Smoke check (pre-commit hook runs cleanly against current author):"
-& (Join-Path $hooksDir 'pre-commit')
+# The hook is a POSIX shell script (#!/bin/sh). On Windows we have
+# to dispatch via `sh` explicitly -- PowerShell's `&` invocation on
+# an extensionless shebang file would hang waiting for Windows to
+# pick an interpreter. `sh` ships with Git for Windows at a
+# predictable path; fall back to PATH if the standard location
+# isn't there.
+$sh = "C:/Program Files/Git/bin/sh.exe"
+if (-not (Test-Path $sh)) { $sh = "sh" }
+& $sh (Join-Path $hooksDir 'pre-commit')
 if ($LASTEXITCODE -eq 0) {
     Write-Host "  pre-commit accepts current identity. OK." -ForegroundColor Green
 } else {
