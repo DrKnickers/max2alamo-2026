@@ -190,14 +190,30 @@ foreach ($t in $tests) {
 
     # Tier 3: feature-specific verifier (the bespoke verify_<name>.py).
     $verifyOut = & python $verifyPy $aloPath 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "OK   $verifyOut" -ForegroundColor Green
-        $pass++
-    } else {
+    if ($LASTEXITCODE -ne 0) {
         Write-Host "FAIL (Tier 3: $verifyPy)" -ForegroundColor Red
         $verifyOut | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
         $fail++; $failed += $name
+        continue
     }
+
+    # Tier 4 (automated playback validator): vanilla-empirical property
+    # checks on the .alo + sibling .ala companions. Catches the Tier-1-3
+    # blind-spot regression class: writer produces byte-valid output that
+    # violates a convention the engine reads (Phase 14e missing static
+    # defaults, Phase 10.5 missing 0x10006). Manual AloViewer smoke tests
+    # remain Tier 5 in docs/build.md.
+    $playbackPy = Join-Path $verifyDir 'validate_playback.py'
+    $playbackOut = & python $playbackPy $aloPath 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "FAIL (Tier 4: validate_playback)" -ForegroundColor Red
+        $playbackOut | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+        $fail++; $failed += $name
+        continue
+    }
+
+    Write-Host "OK   $verifyOut" -ForegroundColor Green
+    $pass++
 }
 
 Write-Host ""

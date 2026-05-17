@@ -103,7 +103,7 @@ GitHub Actions builds only the SDK-independent targets (`alamo_format`, `alo_dum
 
 ## Testing the export pipeline
 
-Every plugin / walker / format-library change must pass the full export test pyramid before merge. Tiers 1–3 are automated by `scripts/run-max-tests.ps1`; Tier 4 is a manual checklist.
+Every plugin / walker / format-library change must pass the full export test pyramid before merge. Tiers 1–4 are automated by `scripts/run-max-tests.ps1`; Tier 5 is a manual checklist for things batch mode can't verify.
 
 ### Tier 1 — Tier-1 invariants (automated, two modes)
 
@@ -122,12 +122,22 @@ Each exported `.alo` is fed through `build\tools\alo_roundtrip\Release\alo_round
 
 Each `tests/maxscript/test_*.ms` ships with a paired `verify_test_*.py` that asserts the behaviour the test was written to pin. When you add a feature, add its Tier 3 verifier.
 
+### Tier 4 — Playback validator (automated)
+
+`tests/maxscript/verify/validate_playback.py` runs on every exported `.alo` (plus any sibling `.ala` companions) after Tier 3. Asserts vanilla-empirical conventions the engine reads at playback time that aren't caught by structural validity (Tier 1), writer round-trip (Tier 2), or feature-specific (Tier 3) tests. Three concrete checks:
+
+- **Phase 14e (translation)** — for every bone in the `.ala` with no per-frame tracks (`idx_translation = idx_rotation = -1`), assert `trans_offset` matches the `.alo` bind matrix translation row within 1e-3.  Catches the regression class where the walker leaves `trans_offset` at struct zero for synth bones (static-mesh attachment bones, light synth, proxy synth, light targets) — engine reads "bone is at parent-local (0,0,0)" the moment any clip starts playing and snaps the bone to the parent's origin.
+- **Phase 14e (rotation, loose)** — for the same bones, if the bind matrix's rotation is non-identity, `default_rotation` must NOT be the struct-zero identity quat `(0, 0, 0, ±32767)`.  Catches "walker forgot to extract + pack the bind rotation into `default_rotation`".  Loose form; doesn't catch the full Phase 14a quat-sign convention mismatch (that requires a Max-equivalent matrix-to-quat implementation in Python, deferred).
+- **Phase 10.5** — every submesh whose `vertex_format_name` contains `RSkin` or `B4I4` must have a `0x10006` bone-remap chunk (`Submesh.bone_remap` non-`None`).  Catches the regression class where the walker emits skinned geometry without the local-to-global slot remap the engine's renderer dereferences — produces stretched-triangle artifacts when present.
+
 ```powershell
-# Tiers 1-3 in one shot:
+# Tiers 1-4 in one shot:
 powershell -File scripts/run-max-tests.ps1
 ```
 
-### Tier 4 — Manual smoke tests (release / major-PR sign-off)
+When this tier flags a regression, the error message names the bone / submesh, the bad value vs the expected, and the walker code path most likely to have caused it.  See `tests/maxscript/verify/validate_playback.py` docstring for the full convention list + regression-class background.
+
+### Tier 5 — Manual smoke tests (release / major-PR sign-off)
 
 Things batch mode can't verify. Run these for releases or whenever a PR's behaviour can't be inferred from on-disk structure alone:
 
@@ -135,7 +145,7 @@ Things batch mode can't verify. Run these for releases or whenever a PR's behavi
 - [ ] **AloViewer.** Drag the exported `.alo` onto AloViewer. Renders without crash; geometry has expected shape and orientation; materials visible (textured surfaces show texture, not solid colour).
 - [ ] **In-game (EaW / FoC).** Drop the `.alo` into a mod folder and load the relevant unit. Loads without crash; renders correctly; for animation work, animations play; hardpoints fire from expected positions.
 
-### Tier 4 — Animation Settings rollout (Phase 11b.2)
+### Tier 5 — Animation Settings rollout (Phase 11b.2)
 
 The Utility-panel Animation Settings rollout drives multi-clip authoring + per-clip `.ala` emission. Catch2 covers the pure-C++ logic (parsing, validation, prev/next, range union — 43 cases under `alamo_format/tests/anim_clip_list_test.cpp`); these manual steps cover the Win32 dispatch, undo semantics, and animationRange propagation that no headless harness can exercise. Run them in 3ds Max 2026 after rebuilding the `.dle`.
 
@@ -157,7 +167,7 @@ The Utility-panel Animation Settings rollout drives multi-clip authoring + per-c
 
 **Negative tripwire G** (manual sanity check during development): in `max2alamo/src/animation_settings_dlg.cpp::ApplySelectedClip`, comment out the `SetAnimRangeAndNotify(util->m_ip, start, end)` line. Rebuild. Run step 5 above. Expected: spinners flip to `WALK`'s range but time-slider does NOT scrub. Confirms the smoke test would catch a regression of the user-requested "combo selection scrubs timeline" behavior.
 
-### Tier 4 — Legacy `.max` clip-data import (Phase 11c)
+### Tier 5 — Legacy `.max` clip-data import (Phase 11c)
 
 The legacy Petroglyph max2alamo.dle Utility plugin (Max 6/8/9, EaW/FoC/UaW eras) stored per-clip animation metadata as 342-byte `appData` records keyed off `Class_ID(0x70a24090, 0x60c90f03)`. Phase 11c's `NOTIFY_FILE_POST_OPEN` hook translates those records into Phase 11b's `Alamo_Anim_Clips` + `Alamo_Anim_<NAME>_Start/_End` user-prop convention so the Animation Settings rollout surfaces the imported clips without user action.
 
@@ -176,7 +186,7 @@ Fixtures used (local-only, under `tests/corpus/legacy/ThrREv/Ascendancy/`): `Sup
 
 **Negative tripwire H** (manual sanity check during development): in `alamo_format/src/legacy_clip_scan.cpp`, flip one byte of `kLegacyUtilityClassIdBytes` (e.g. `0x90` → `0x91`). Rebuild. Re-open `CIS_SBD.max`. Expected: Listener silent (no "imported N clips" line); rollout combo shows `-- none --`. Confirms the importer is keyed off the exact recovered Class_ID and a regression mutating it would surface immediately.
 
-### Tier 4 — Shadow-volume closed-volume validator (Phase 12)
+### Tier 5 — Shadow-volume closed-volume validator (Phase 12)
 
 Validates that meshes flagged as shadow-volume (via shader `MeshShadowVolume.fx` / `RSkinShadowVolume.fx`, or the legacy `_ALAMO_SHADOW_VOLUME = 1` int user-prop) form a closed 2-manifold. Open meshes get a one-line warning per offending mesh in `.export.log` and the MAXScript Listener; export is **not** aborted. Matches the legacy PG exporter's warn-not-abort behaviour. Catch2 covers the pure-C++ topology check (13 cases under `alamo_format/tests/shadow_volume_check_test.cpp`); the steps below cover the GUI export path that the batch harness doesn't exercise.
 
@@ -197,7 +207,7 @@ Validates that meshes flagged as shadow-volume (via shader `MeshShadowVolume.fx`
 
 **Corpus baseline** (informational, no manual action): `python scripts/check_shadow_volume_corpus.py` over EaW + FoC corpus reports ~75% pass rate (2,392 closed / 3,168 shadow submeshes across 4,132 vanilla `.alo` files). The ~25% "open" remainder is vanilla authoring noise the legacy PG exporter would have warned on too — meshes with 1–4 non-manifold edges over hundreds of triangles. The threshold is set to 75% so a regression that makes the validator over-strict (rate drops) would fire the check.
 
-### Tier 4 — Billboard orientation convention (Phase 12.1)
+### Tier 5 — Billboard orientation convention (Phase 12.1)
 
 Validates that meshes authored with `Alamo_Billboard_Mode` (or the legacy `_ALAMO_BILLBOARDS` hook) render with their visible face pointing toward the camera in-engine. The authoring rule is documented in `docs/format-notes.md` "Billboard pivot convention" — the quad's visible-face normal must point along bone-local -Y. Automated coverage: `tests/maxscript/test_phase12_1_billboards_legacy_hook.ms` exercises the back-compat code path; corpus check (`scripts/inspect_billboard_orientation.py`) confirms 14/14 vanilla PARALLEL + SUNLIGHT_GLOW meshes follow the convention exactly. The steps below cover the in-engine visual verification that no headless harness can do.
 
